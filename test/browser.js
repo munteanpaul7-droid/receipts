@@ -53,8 +53,17 @@ const ok = (n, c, x) => { if (c) { pass++; console.log('  ok   ' + n); } else { 
   ok('Check for update present', await page.isVisible('#updBtn'));
   ok('Repair app present', await page.isVisible('#fixBtn'));
   const aiState = await page.textContent('#aiState');
-  ok('scanner state explains hand entry', /typed in by hand/i.test(aiState), aiState);
-  ok('wake chip hidden while no scanner', !(await page.isVisible('#aiWake')));
+  ok('fresh install reads via Drive', /Google Drive/i.test(aiState), aiState);
+  ok('reader picker defaults to Drive', (await page.inputValue('#sReader')) === 'drive');
+  ok('Worker URL box hidden for Drive', !(await page.isVisible('#aiOnly')));
+  ok('wake chip hidden while healthy', !(await page.isVisible('#aiWake')));
+  await page.selectOption('#sReader', 'ai');
+  await page.waitForTimeout(200);
+  ok('choosing Claude reveals the URL box', await page.isVisible('#aiOnly'));
+  ok('choosing Claude reveals the test button', await page.isVisible('#aiTest'));
+  await page.selectOption('#sReader', 'drive');
+  await page.waitForTimeout(200);
+  ok('switching back hides them again', !(await page.isVisible('#aiOnly')));
   await page.screenshot({ path: '/tmp/receipts-shot-settings.png', fullPage: true });
 
   console.log('\n== the tax maths still works ==');
@@ -70,6 +79,7 @@ const ok = (n, c, x) => { if (c) { pass++; console.log('  ok   ' + n); } else { 
   console.log('\n== a dead scanner is diagnosed, not just reported ==');
   // Point the app at a scanner URL that refuses connections, then attach a photo.
   await page.evaluate(() => {
+    localStorage.setItem('rc_cfg_reader', JSON.stringify('ai'));
     localStorage.setItem('rc_cfg_aiUrl', JSON.stringify('http://localhost:9/dead'));
     localStorage.setItem('rc_cfg_autoScan', JSON.stringify('1'));
   });
@@ -113,6 +123,45 @@ const ok = (n, c, x) => { if (c) { pass++; console.log('  ok   ' + n); } else { 
   await page.click('#aiWake'); await page.waitForTimeout(300);
   const woke = await page.evaluate(() => JSON.parse(localStorage.getItem('rc_scanHealth')));
   ok('wake chip clears the pause', woke.fails === 0, JSON.stringify(woke));
+
+  console.log('\n== the free Drive reader fills the form end to end ==');
+  await page.evaluate(() => {
+    localStorage.setItem('rc_cfg_reader', JSON.stringify('drive'));
+    localStorage.setItem('rc_tok', JSON.stringify('fake'));
+    localStorage.setItem('rc_tokExp', JSON.stringify(Date.now() + 3600000));
+    localStorage.setItem('rc_granted', JSON.stringify(true));
+    localStorage.setItem('rc_rootId', JSON.stringify('root-id'));
+    localStorage.setItem('rc_scanHealth', JSON.stringify({ fails: 0, until: 0, code: '', msg: '', fix: '' }));
+  });
+  await page.reload({ waitUntil: 'load' });
+  await page.waitForTimeout(700);
+  await page.evaluate(() => {
+    const TEXT = ['RESTAURANT CHEZ ASHTON', 'Quebec QC', '2026-08-23',
+                  'SOUS-TOTAL 24.00', 'TPS 1.20', 'TVQ 2.39', 'TOTAL 27.59'].join('\n');
+    window.__deleted = false;
+    const real = window.fetch;
+    window.fetch = (u, o) => {
+      const url = String(u), method = (o && o.method) || 'GET';
+      if (url.includes('/upload/drive/v3/files'))
+        return Promise.resolve(new Response(JSON.stringify({ id: 'tmp1' }), { status: 200 }));
+      if (url.includes('/drive/v3/files/root-id'))
+        return Promise.resolve(new Response(JSON.stringify({ id: 'root-id', name: 'receipts' }), { status: 200 }));
+      if (url.includes('/export')) return Promise.resolve(new Response(TEXT, { status: 200 }));
+      if (method === 'DELETE') { window.__deleted = true; return Promise.resolve(new Response('{}', { status: 200 })); }
+      return real(u, o);
+    };
+  });
+  await page.setInputFiles('#libIn', '/tmp/receipts-test.jpg');
+  await page.waitForTimeout(2500);
+  ok('merchant filled from OCR', (await page.inputValue('#fName')) === 'RESTAURANT CHEZ ASHTON', await page.inputValue('#fName'));
+  ok('total filled', (await page.inputValue('#fTotal')) === '27.59', await page.inputValue('#fTotal'));
+  ok('TPS filled', (await page.inputValue('#fTps')) === '1.20', await page.inputValue('#fTps'));
+  ok('TVQ filled', (await page.inputValue('#fTvq')) === '2.39', await page.inputValue('#fTvq'));
+  ok('date filled', (await page.inputValue('#fDate')) === '2026-08-23', await page.inputValue('#fDate'));
+  ok('province set to Quebec', (await page.inputValue('#fTax')) === 'QC', await page.inputValue('#fTax'));
+  ok('row went green', (await page.getAttribute('#scanRow', 'class')).includes('good'), await page.getAttribute('#scanRow', 'class'));
+  ok('temp Drive doc was deleted', await page.evaluate(() => window.__deleted));
+  await page.screenshot({ path: '/tmp/receipts-shot-drive-filled.png' });
 
   console.log('\n== the service worker registers and serves the shell ==');
   const sw = await page.evaluate(async () => {

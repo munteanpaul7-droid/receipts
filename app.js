@@ -80,6 +80,9 @@ const DEFAULTS = {
   struct: 'ym',
   taxGroup: 'QC',
   aiUrl: '',
+  /* Google Drive reads receipts for nothing and needs no setting up, so it
+     is what a fresh install uses. See readerMode() for the one exception. */
+  reader: 'drive',
   autoScan: '1',
   tpsRate: '5',
   tvqRate: '9.975',
@@ -89,7 +92,7 @@ const DEFAULTS = {
 /* Bumped whenever app.js, index.html or styles.css change. Shown in Settings
    so "did the update actually land" is a question you can answer from the
    phone, and used by the service worker to name its cache. */
-const APP_VERSION = '2026-08-24.1';
+const APP_VERSION = '2026-08-24.2';
 
 /* ------------------------------------------------------------- utilities */
 
@@ -620,7 +623,10 @@ async function attach(file) {
 
   $('prev').className = 'prev';
 
-  if (isPdf || !cfg('aiUrl')) {
+  const mode = readerMode();
+  const canRead = !isPdf && mode !== 'off' && (mode === 'drive' || !!cfg('aiUrl'));
+
+  if (!canRead) {
     toast((isPdf ? 'PDF' : 'Photo') + ' attached. Fill in the details.', 'good');
   } else if (scannerOffline()) {
     /* The scanner failed its way out of the loop earlier. Say so once, in
@@ -671,6 +677,19 @@ function noteScanFail(info) {
   });
 }
 
+/* Shows only the controls the chosen reader actually uses — a Worker URL
+   box is noise to someone using the free one. */
+function paintReaderMode() {
+  const mode = readerMode();
+  $opt('sReader').value = mode;
+  $opt('aiOnly').className = 'f' + (mode === 'ai' ? '' : ' hide');
+  $opt('aiTest').className = 'btn ghost' + (mode === 'ai' ? '' : ' hide');
+  $opt('readerHint').textContent =
+    mode === 'drive' ? 'Your photo goes to Google Drive, which reads the text at no charge, and the temporary copy is deleted straight away. Works on printed receipts; check the boxes before saving.'
+  : mode === 'ai'    ? 'Claude reads the receipt properly — layout, French or English, which province. Needs an Anthropic account with credit, roughly a dollar or two a month.'
+                     : 'Nothing is read for you. Photos still upload to Drive exactly as before.';
+}
+
 /* The Settings line that says where the scanner stands. It is the one place
    that states out loud what failed last time and which knob fixes it. */
 function paintScannerState() {
@@ -678,8 +697,12 @@ function paintScannerState() {
   const wake = $opt('aiWake');
   const h = scanHealth();
 
-  if (!cfg('aiUrl')) {
-    el.textContent = 'No scanner set up. Receipts get typed in by hand, which needs nothing but this app.';
+  const mode = readerMode();
+  if (mode === 'off') {
+    el.textContent = 'Reading is switched off. Every receipt gets typed in by hand.';
+    wake.className = 'chip hide';
+  } else if (mode === 'ai' && !cfg('aiUrl')) {
+    el.textContent = 'Claude is selected but no scanner URL is set. Paste the Worker address above.';
     wake.className = 'chip hide';
   } else if (scannerOffline()) {
     const mins = Math.max(1, Math.round((h.until - Date.now()) / 60000));
@@ -689,8 +712,13 @@ function paintScannerState() {
   } else if (h.fails > 0) {
     el.textContent = 'Last read failed. ' + h.msg + ' ' + h.fix;
     wake.className = 'chip hide';
+  } else if (mode === 'drive') {
+    el.textContent = connected() || S.get('granted', false)
+      ? 'Google Drive is reading your receipts. Free, and nothing to set up.'
+      : 'Google Drive will read your receipts once you tap Connect Drive above.';
+    wake.className = 'chip hide';
   } else {
-    el.textContent = 'Scanner is set up and working.';
+    el.textContent = 'Claude is reading your receipts.';
     wake.className = 'chip hide';
   }
 }
@@ -767,6 +795,389 @@ function explainScanFailure(status, data, netErr) {
   return { code: 'unknown',
            msg: (data && data.error) ? String(data.error).slice(0, 90) : 'The scanner returned ' + (status || 'nothing') + '.',
            fix: 'Type it in — that always works.' };
+}
+
+/* -------------------------------------------- reading a receipt for free
+
+   Google Drive does optical character recognition at no charge: upload an
+   image and ask for it back as a Google Doc, and the text comes out. The
+   app is already signed in to Drive with permission to create files, so
+   this costs nothing, needs no API key, and needs no setting up. The temp
+   document is deleted the moment its text has been read.
+
+   What comes back is the receipt as plain text, roughly in reading order
+   and with the odd character mangled. Everything below is the business of
+   turning that into fields, and all of it is written to fail softly: a
+   value that cannot be read with confidence is left empty for you to type
+   rather than guessed at.                                                */
+
+/* Amounts as printed in Canada: 114.98, 114,98, 1,234.56, 1 234,56. The
+   trailing guard keeps a tax rate like 9.975 from being read as 9.97, and
+   the two alternatives keep 1234.56 from being read as 234.56. num()
+   already understands every one of these shapes. */
+const AMOUNT_RE = /(?:\d{1,3}(?:[  ,]\d{3})+|\d+)[.,]\d{2}(?!\d)/g;
+
+function amountsIn(line) {
+  const m = String(line).match(AMOUNT_RE);
+  return m ? m.map(num) : [];
+}
+
+/* Receipts print the label on the left and the figure on the right, so on
+   a line that names something, the number wanted is the last one. */
+function lastAmount(line) {
+  const a = amountsIn(line);
+  return a.length ? a[a.length - 1] : null;
+}
+
+const RX = {
+  subtotal: /\b(?:sous[\s\-]*total|sub[\s\-]*total|s\/?[\s\-]?total)\b/i,
+  total:    /\b(?:grand\s+total|total|montant|amount\s+due|balance\s+due|[àa]\s+payer)\b/i,
+  fed:      /\b(?:tps|gst|hst|tvh)\b/i,
+  prov:     /\b(?:tvq|qst|pst|rst|tvp)\b/i,
+  tip:      /\b(?:pourboire|gratuit[ée]?|gratuity|tip)\b/i,
+  change:   /\b(?:monnaie|change|rendu|rendre)\b/i,
+  cash:     /\b(?:comptant|cash|esp[èe]ces|tendered|re[çc]u\s+de)\b/i,
+  /* Registration numbers, which must never be mistaken for money. */
+  fedNo:    /\b(\d{9}\s*RT\s*\d{4})\b/i,
+  provNo:   /\b(\d{10}\s*TQ\s*\d{4})\b/i
+};
+
+const MONTH_WORDS = {
+  jan:1, janv:1, janvier:1, january:1,
+  feb:2, febr:2, february:2, fev:2, 'fév':2, fevr:2, 'févr':2, fevrier:2, 'février':2,
+  mar:3, mars:3, march:3,
+  apr:4, april:4, avr:4, avril:4,
+  may:5, mai:5,
+  jun:6, june:6, juin:6,
+  jul:7, july:7, juil:7, juillet:7,
+  aug:8, august:8, aou:8, 'aoû':8, aout:8, 'août':8,
+  sep:9, sept:9, september:9, septembre:9,
+  oct:10, october:10, octobre:10,
+  nov:11, november:11, novembre:11,
+  dec:12, december:12, 'déc':12, decembre:12, 'décembre':12
+};
+
+function iso(y, m, d) {
+  const p = (x) => String(x).padStart(2, '0');
+  return y + '-' + p(m) + '-' + p(d);
+}
+
+/* A receipt is a record of something that already happened and is almost
+   always recent, so a date in the future or from years back is a misread
+   rather than a purchase. */
+function plausibleDate(y, m, d) {
+  if (m < 1 || m > 12 || d < 1 || d > 31) return null;
+  if (y < 100) y += y > 70 ? 1900 : 2000;
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) return null;
+  const now = Date.now();
+  const age = now - dt.getTime();
+  if (age < -36 * 3600 * 1000) return null;             // tomorrow or later
+  if (age > 3 * 365 * 24 * 3600 * 1000) return null;    // more than three years old
+  return { text: iso(y, m, d), at: dt.getTime() };
+}
+
+function monthNum(word) {
+  const k = String(word).toLowerCase().replace(/\.$/, '');
+  if (MONTH_WORDS[k]) return MONTH_WORDS[k];
+  /* Fall back on the first three letters, which is how most receipts
+     abbreviate and how OCR usually leaves an accented month. */
+  return MONTH_WORDS[k.slice(0, 4)] || MONTH_WORDS[k.slice(0, 3)] || 0;
+}
+
+function findDate(text) {
+  const found = [];
+
+  /* Unambiguous first: a four-digit year pins the order. */
+  let re = /(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/g, m;
+  while ((m = re.exec(text))) {
+    const d = plausibleDate(+m[1], +m[2], +m[3]);
+    if (d) found.push(d);
+  }
+
+  /* 23 AOUT 2026, and AUG 23 2026. */
+  re = /(\d{1,2})\s*[-/. ]\s*([A-Za-zÀ-ÿ]{3,10})\.?\s*[-/. ,]\s*(\d{2,4})/g;
+  while ((m = re.exec(text))) {
+    const mo = monthNum(m[2]);
+    if (mo) { const d = plausibleDate(+m[3], mo, +m[1]); if (d) found.push(d); }
+  }
+  re = /([A-Za-zÀ-ÿ]{3,10})\.?\s*[-/. ]\s*(\d{1,2})\s*[-/. ,]\s*(\d{2,4})/g;
+  while ((m = re.exec(text))) {
+    const mo = monthNum(m[1]);
+    if (mo) { const d = plausibleDate(+m[3], mo, +m[2]); if (d) found.push(d); }
+  }
+
+  /* All-numeric with a short year is genuinely ambiguous between the
+     Canadian day-first and the American month-first. Where only one of
+     them is a real, recent date, that settles it; where both are, the one
+     nearer today wins, because that is what a receipt in your pocket is. */
+  re = /(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})/g;
+  while ((m = re.exec(text))) {
+    const a = +m[1], b = +m[2], y = +m[3];
+    const dayFirst = plausibleDate(y, b, a);
+    const monthFirst = plausibleDate(y, a, b);
+    if (dayFirst && monthFirst) found.push(dayFirst.at >= monthFirst.at ? dayFirst : monthFirst);
+    else if (dayFirst) found.push(dayFirst);
+    else if (monthFirst) found.push(monthFirst);
+  }
+
+  if (!found.length) return null;
+  /* Several dates on one receipt usually means a transaction date and a
+     card expiry or a "valid until"; the purchase is the most recent one
+     that is not in the future. */
+  found.sort((x, y) => y.at - x.at);
+  return found[0].text;
+}
+
+/* The shop name is nearly always the first real line. Skip the noise a
+   till prints above it and anything that is mostly digits. */
+const NAME_NOISE = /^(?:re[çc]u|receipt|facture|invoice|copie|copy|client|merchant|marchand|bienvenue|welcome|thank|merci|bon\s|tel|t[ée]l|fax|www\.|http|no\.?\s*\d|#\d|caisse|term|terminal|date|heure|time)/i;
+
+function findMerchant(lines) {
+  for (let i = 0; i < Math.min(lines.length, 8); i++) {
+    const l = lines[i];
+    const letters = (l.match(/[A-Za-zÀ-ÿ]/g) || []).length;
+    const digits = (l.match(/\d/g) || []).length;
+    if (letters < 3) continue;
+    if (digits > letters) continue;
+    if (NAME_NOISE.test(l)) continue;
+    if (RX.fed.test(l) || RX.prov.test(l) || RX.total.test(l)) continue;
+    /* Trim a trailing store or branch number, keep the name. */
+    return l.replace(/\s*[#(]?\s*(?:no|n[o°]|store|succ|mag)?\.?\s*\d{2,}\s*\)?\s*$/i, '').trim().slice(0, 60);
+  }
+  return null;
+}
+
+/* Province from the tax lines. The labels alone settle Quebec and rule out
+   the HST provinces; where two provinces share a label the rates separate
+   them. Anything still ambiguous is left empty so your own default stands
+   rather than being overwritten with a guess. */
+function inferGroup(text, sub, fed, prov) {
+  if (/\b(?:tvq|qst)\b/i.test(text) || /\btps\b/i.test(text)) return 'QC';
+
+  const near = (a, b) => a > 0 && Math.abs(a - b) <= 0.4;
+  const fr = sub > 0 ? (fed / sub) * 100 : 0;
+  const pr = sub > 0 ? (prov / sub) * 100 : 0;
+
+  if (prov > 0) {
+    if (near(fr, 5) && near(pr, 9.975)) return 'QC';
+    if (near(fr, 5) && near(pr, 7)) return /\brst\b/i.test(text) ? 'MB' : 'BC';
+    if (near(fr, 5) && near(pr, 6)) return 'SK';
+    if (/\brst\b/i.test(text)) return 'MB';
+    return '';
+  }
+  if (near(fr, 13)) return 'ON';
+  if (near(fr, 14)) return 'NS';
+  /* 15% is New Brunswick, Newfoundland and PEI alike, and a lone 5% could
+     be any of Alberta, NWT, Nunavut or Yukon. Neither is knowable. */
+  return '';
+}
+
+/* Turns the OCR text into the same shape the Claude reader returns, so
+   everything downstream — applyScan, the form, the history — is unchanged
+   whichever reader produced it. */
+function parseReceiptText(text) {
+  const clean = String(text || '').replace(/ /g, ' ');
+  const lines = clean.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (!lines.length) return null;
+
+  let subtotal = null, total = null, fedTax = null, provTax = null, tip = null;
+  const totalCandidates = [];
+
+  for (const line of lines) {
+    /* A registration number is digits that look nothing like money, but
+       strip it anyway so no later rule can trip over it. */
+    const l = line.replace(RX.fedNo, ' ').replace(RX.provNo, ' ');
+    const amt = lastAmount(l);
+    if (amt === null) continue;
+
+    if (RX.change.test(l) || RX.cash.test(l)) continue;
+
+    if (RX.subtotal.test(l)) {
+      if (subtotal === null) subtotal = amt;
+      continue;                       /* "SOUS-TOTAL" contains "TOTAL" */
+    }
+    if (RX.tip.test(l)) { if (tip === null) tip = amt; continue; }
+    if (RX.fed.test(l)) { if (fedTax === null) fedTax = amt; continue; }
+    if (RX.prov.test(l)) { if (provTax === null) provTax = amt; continue; }
+    if (RX.total.test(l)) totalCandidates.push(amt);
+  }
+
+  /* Several lines say TOTAL — the amount, the card total, the tendered
+     amount. The real one is the largest, since every other total on a
+     receipt is a part of it. */
+  if (totalCandidates.length) total = Math.max.apply(null, totalCandidates);
+
+  /* Nothing said "total" anywhere. The largest amount on the receipt is
+     the next best guess, and is usually right. */
+  if (total === null) {
+    const all = lines.reduce((acc, l) => acc.concat(amountsIn(l)), []);
+    if (all.length) total = Math.max.apply(null, all);
+  }
+  if (!total || total <= 0) return null;
+
+  if (subtotal === null && fedTax !== null) {
+    subtotal = total - fedTax - (provTax || 0);
+  }
+
+  /* Does the arithmetic close? That single check is worth more than any
+     amount of pattern matching for knowing whether to trust this. */
+  const sum = (subtotal || 0) + (fedTax || 0) + (provTax || 0);
+  const balances = subtotal !== null && fedTax !== null &&
+                   Math.abs(sum - total) <= 0.02 + (tip || 0);
+
+  const group = inferGroup(clean, subtotal || 0, fedTax || 0, provTax || 0);
+
+  const fedNo = clean.match(RX.fedNo);
+  const provNo = clean.match(RX.provNo);
+
+  let confidence = 'low';
+  if (balances) confidence = 'high';
+  else if (fedTax !== null || totalCandidates.length) confidence = 'medium';
+
+  const note = balances ? null
+    : (fedTax === null ? 'No tax line was readable — check the tax boxes.'
+                       : 'The tax does not add up to the total; check it.');
+
+  return {
+    merchant: findMerchant(lines),
+    date: findDate(clean),
+    total: total,
+    subtotal: subtotal,
+    federal_tax: fedTax,
+    provincial_tax: provTax,
+    tax_group: group,
+    category: '',
+    federal_tax_number: fedNo ? fedNo[1].replace(/\s+/g, ' ').toUpperCase() : null,
+    provincial_tax_number: provNo ? provNo[1].replace(/\s+/g, ' ').toUpperCase() : null,
+    tip: tip,
+    confidence: confidence,
+    note: note
+  };
+}
+
+/* Uploads the photo asking Drive for a Google Doc back. That conversion is
+   what runs the OCR, and it is free. The temp document is deleted the
+   moment its text has been read — including when reading it fails, so a
+   stray file never accumulates in your receipts folder. */
+async function ocrViaDrive(blob) {
+  await ensureToken();
+  const rootId = await rootFolderId();
+
+  const meta = {
+    name: '~ocr-temp',
+    mimeType: 'application/vnd.google-apps.document',
+    parents: [rootId]
+  };
+  const form = new FormData();
+  form.append('metadata', new Blob([JSON.stringify(meta)], { type: 'application/json' }));
+  form.append('file', blob, 'receipt.jpg');
+
+  const up = await fetch(
+    'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',
+    { method: 'POST', headers: { Authorization: 'Bearer ' + accessToken }, body: form }
+  );
+  if (up.status === 401) { accessToken = null; tokenExp = 0; throw new Error('auth-expired'); }
+  if (!up.ok) throw new Error('drive-upload-' + up.status);
+  const id = (await up.json()).id;
+
+  try {
+    const ex = await fetch(
+      'https://www.googleapis.com/drive/v3/files/' + id + '/export?mimeType=text/plain',
+      { headers: { Authorization: 'Bearer ' + accessToken } }
+    );
+    if (!ex.ok) throw new Error('drive-export-' + ex.status);
+    return await ex.text();
+  } finally {
+    /* Tidying up must never cost us a receipt we have already read. A bare
+       .catch() would only cover an async rejection — the try/catch also
+       covers fetch throwing outright, which would otherwise escape this
+       finally block and discard the text we came here for. */
+    try {
+      fetch('https://www.googleapis.com/drive/v3/files/' + id, {
+        method: 'DELETE', headers: { Authorization: 'Bearer ' + accessToken }
+      }).catch(() => {});
+    } catch (e) { /* the temp doc can be tidied later; the receipt matters more */ }
+  }
+}
+
+/* Which reader is in use. Someone who had already set up the Claude Worker
+   keeps it; everybody else gets the free one, which needs no setting up. */
+function readerMode() {
+  const explicit = S.get('cfg_reader', null);
+  if (explicit) return explicit;
+  return cfg('aiUrl') ? 'ai' : 'drive';
+}
+
+const DRIVE_CAUSES = {
+  no_drive:  { msg: 'Reading receipts uses your Google Drive connection, which is not set up yet.',
+               fix: 'Open Settings and tap Connect Drive.' },
+  no_text:   { msg: 'No text could be made out in that photo.',
+               fix: 'Try again in better light, or type it in.' },
+  no_fields: { msg: 'The text came out but no amount could be found in it.',
+               fix: 'Type it in — the photo still uploads with the receipt.' }
+};
+
+function explainDriveFailure(e) {
+  const m = String((e && e.message) || e);
+  if (m === 'timeout') {
+    return { code: 'upstream', transient: true,
+             msg: 'Google Drive took too long to answer.',
+             fix: 'Tap Read to try again, or type it in.' };
+  }
+  if (!navigator.onLine) {
+    return { code: 'offline', transient: true,
+             msg: 'No connection, so the receipt cannot be read here.',
+             fix: 'Type it in — saving works offline and uploads later.' };
+  }
+  if (m === 'auth-expired' || /-401$/.test(m)) {
+    return { code: 'no_drive',
+             msg: 'The Google sign-in has lapsed, so Drive could not read the photo.',
+             fix: 'Open Settings and tap Connect Drive.' };
+  }
+  if (/-403$/.test(m)) {
+    return { code: 'quota', transient: true,
+             msg: 'Google turned the request down — usually the daily free limit.',
+             fix: 'Try again later, or type it in.' };
+  }
+  if (/^drive-(upload|export)-5/.test(m)) {
+    return { code: 'upstream', transient: true,
+             msg: 'Google Drive did not answer properly.',
+             fix: 'Tap Read to try again.' };
+  }
+  return { code: 'unknown',
+           msg: 'Drive could not read that photo.',
+           fix: 'Type it in — that always works.' };
+}
+
+/* The Drive read is several requests deep — a token refresh, a folder
+   lookup, an upload, an export — and any one of them can hang rather than
+   fail. One deadline over the whole thing is what guarantees the spinner
+   always stops, which is the entire point of this app's error handling. */
+function withDeadline(promise, ms) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timeout')), ms); })
+  ]).finally(() => clearTimeout(timer));
+}
+
+async function tryReadDrive() {
+  if (!connected() && !S.get('granted', false)) {
+    return { fail: Object.assign({ code: 'no_drive' }, DRIVE_CAUSES.no_drive) };
+  }
+  let text;
+  try {
+    text = await withDeadline(ocrViaDrive(pending.blob), SCAN_TIMEOUT_MS);
+  } catch (e) {
+    return { fail: explainDriveFailure(e) };
+  }
+  if (!String(text || '').trim()) {
+    return { fail: Object.assign({ code: 'no_text' }, DRIVE_CAUSES.no_text) };
+  }
+  const fields = parseReceiptText(text);
+  if (!fields) return { fail: Object.assign({ code: 'no_fields' }, DRIVE_CAUSES.no_fields) };
+  return { fields };
 }
 
 function setScan(state, msg) {
@@ -856,21 +1267,29 @@ async function scanReceipt(manual) {
     if (manual) toast('Attach a photo first.', 'bad');
     return;
   }
+
+  const mode = readerMode();
+  if (mode === 'off') {
+    setScan('', 'Reading is switched off. Fill the fields in below.');
+    return;
+  }
   const url = cfg('aiUrl');
-  if (!url) {
-    setScan('', 'No scanner set up. Fill the fields in below — that always works.');
+  if (mode === 'ai' && !url) {
+    setScan('', 'No scanner URL set. Fill the fields in below — that always works.');
     return;
   }
 
-  setScan('busy', 'Reading receipt…');
+  const attempt = () => (mode === 'drive' ? tryReadDrive() : tryScan(url));
+  setScan('busy', mode === 'drive' ? 'Reading receipt with Google Drive…'
+                                   : 'Reading receipt…');
 
-  /* A rate limit or a hiccup at Anthropic is worth exactly one more try. A
+  /* A rate limit or a hiccup upstream is worth exactly one more try. A
      missing key or a deleted Worker will not fix itself in 1.5 seconds. */
-  let out = await tryScan(url);
+  let out = await attempt();
   if (out.fail && out.fail.transient && out.fail.code !== 'offline') {
-    setScan('busy', 'Scanner is busy — trying once more…');
+    setScan('busy', 'Busy — trying once more…');
     await new Promise((r) => setTimeout(r, 1500));
-    out = await tryScan(url);
+    out = await attempt();
   }
 
   if (out.fail) {
@@ -1074,6 +1493,7 @@ function boot() {
   $('sQual').value = cfg('maxPx');
   $('sAi').value = cfg('aiUrl');
   $('sAuto').value = cfg('autoScan');
+  $opt('sReader').value = readerMode();
   $('sOrigin').value = location.origin;
   $('sRedir').value = redirectUri();
   $opt('sVer').value = APP_VERSION;
@@ -1161,6 +1581,7 @@ function boot() {
     setCfg('aiUrl', $('sAi').value.trim().replace(/\/+$/, ''));
     /* Pointing at a different Worker makes the old failures meaningless. */
     if (prevAi !== cfg('aiUrl')) noteScanOk();
+    setCfg('reader', $opt('sReader').value);
     setCfg('autoScan', $('sAuto').value);
     setCfg('taxGroup', $('sTaxDefault').value);
     setCfg('tpsRate', $('sTps').value.trim() || '5');
@@ -1169,6 +1590,7 @@ function boot() {
     if (prevRoot !== cfg('root')) S.del('rootId');
     applyTaxGroup($('fTax').value, false);
     paintStatus();
+    paintReaderMode();
     paintScannerState();
     toast('Settings saved.', 'good');
   });
@@ -1243,6 +1665,14 @@ function boot() {
 
   /* The pause is a convenience, never a lock. This clears it on demand so a
      scanner you have just fixed is usable without waiting out the cooldown. */
+  $opt('sReader').addEventListener('change', () => {
+    setCfg('reader', $opt('sReader').value);
+    /* A different reader has nothing to do with the last one's failures. */
+    noteScanOk();
+    paintReaderMode();
+    paintScannerState();
+  });
+
   $opt('aiWake').addEventListener('click', () => {
     noteScanOk();
     paintScannerState();
@@ -1311,6 +1741,7 @@ function boot() {
   paintMerchants();
   paintHistory();
   paintStatus();
+  paintReaderMode();
   paintScannerState();
   updateSums();
 

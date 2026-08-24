@@ -5,6 +5,7 @@ const ok = (n, c, x) => { if (c) { pass++; console.log('  ok   ' + n); } else { 
 
 function scanEnv(replies) {
   const c = freshEnv();
+  c._ls.setItem('rc_cfg_reader', JSON.stringify('ai'));
   c._ls.setItem('rc_cfg_aiUrl', JSON.stringify('https://x.workers.dev'));
   c.blobToBase64 = () => Promise.resolve('QUJD');
   c.calls = 0;
@@ -99,9 +100,20 @@ console.log('\n== a scan never overwrites what you typed ==');
   ok('empty total still gets filled', c._els.fTotal.value === '114.98', c._els.fTotal.value);
 }
 
-console.log('\n== no scanner configured is a calm state, not an error ==');
+console.log('\n== switching reading off is a calm state, not an error ==');
 {
   const c = scanEnv([GOOD]);
+  c._ls.setItem('rc_cfg_reader', JSON.stringify('off'));
+  await c.scanReceipt(true);
+  ok('no network call', c.calls === 0, String(c.calls));
+  ok('row is neutral, not red', c._els.scanRow.className === 'scan', c._els.scanRow.className);
+  ok('points at the form', /type|fill/i.test(c._els.scanMsg.textContent), c._els.scanMsg.textContent);
+}
+
+console.log('\n== Claude selected but no URL is a calm state too ==');
+{
+  const c = scanEnv([GOOD]);
+  c._ls.setItem('rc_cfg_reader', JSON.stringify('ai'));
   c._ls.removeItem('rc_cfg_aiUrl');
   await c.scanReceipt(true);
   ok('no network call', c.calls === 0, String(c.calls));

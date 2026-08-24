@@ -111,16 +111,48 @@ just queues; open Settings and tap **Connect Drive** to flush the queue.
 
 ---
 
-## When the AI scanning stops working
+## Reading receipts for you
 
-The scanner is the one part of this app that leans on something outside your
-phone: a small Cloudflare Worker holding an Anthropic key. Workers get deleted,
-keys get rotated, credit runs out. **None of that stops you filing receipts** —
-photographing, typing, saving and uploading to Drive never touch the scanner.
-It only fills the fields in for you.
+Take the photo and the boxes fill themselves in. **Settings → Reading receipts**
+picks who does the reading:
 
-The app now says which of those things went wrong, in the scan strip on the New
-tab and again under **Settings → AI scanning**:
+| | Cost | Setup | Accuracy |
+|---|---|---|---|
+| **Google Drive** (default) | Free | None | Good on printed receipts |
+| **Claude** | ~$1–2/month | Anthropic key + Worker | Best — understands layout, French, province |
+| **Nobody** | — | — | You type it in |
+
+**Google Drive is the default and costs nothing.** Google does optical character
+recognition free of charge when it converts an image to a Google Doc, so the app
+uploads the photo, reads the text back, and deletes the temporary document
+straight away. It rides on the Drive permission you already granted — no API
+key, no second account, no bill.
+
+From that text it works out the merchant, the date, the total, the tax lines and
+which province you were in — recognising TPS/TVQ, GST/HST, PST and RST, in
+French or English. It checks its own arithmetic: when subtotal plus tax equals
+the total, it says so; when it doesn't, it tells you to look. **Anything it
+cannot read with confidence is left blank rather than guessed at**, and nothing
+it fills in ever overwrites something you typed yourself.
+
+It is not magic. A crumpled, faded or badly-lit receipt will come back with gaps,
+and 15% HST provinces (New Brunswick, Newfoundland, PEI) can't be told apart from
+their tax alone, so the province is left on your default. Check the boxes before
+saving.
+
+If you want the best possible reading, switch to **Claude** — that needs an
+Anthropic account with credit, roughly a dollar or two a month at a hundred
+receipts. Note this is **separate from a Claude Pro or Max subscription**, which
+does not cover API usage.
+
+## When the reading stops working
+
+Whichever reader you use, **it failing never stops you filing receipts** —
+photographing, typing, saving and uploading to Drive don't depend on it.
+
+The app says what went wrong, in the strip on the New tab and again under
+**Settings → Reading receipts**. With Google Drive that is usually a lapsed
+sign-in ("tap Connect Drive") or a photo too poor to read. With Claude:
 
 | What it says | What actually happened | What fixes it |
 |---|---|---|
@@ -132,7 +164,7 @@ tab and again under **Settings → AI scanning**:
 | Refuses requests from this address | The app is on a URL the Worker does not allow | Add that address to `ALLOWED_ORIGINS` in the Worker |
 | Asking for a model that no longer exists | Claude retired that model | Change `MODEL` in `worker/receipt-ocr.js`, redeploy |
 
-After three failures in a row the app **stops asking**. It will not paint a red
+Either way, after three failures in a row the app **stops asking**. It will not paint a red
 error over every receipt you file; it says the scanner is off, gets out of the
 way, and tries again by itself a quarter of an hour later. Tapping **Read** on
 any receipt tries immediately, and one success switches it straight back on —

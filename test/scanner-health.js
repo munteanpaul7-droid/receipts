@@ -92,12 +92,21 @@ console.log('\n== Settings tells the truth about each state ==');
 {
   const c = freshEnv();
   c.paintScannerState();
-  ok('no URL -> says hand entry is fine', /typed in by hand/i.test(c._els.aiState.textContent), c._els.aiState.textContent);
-  ok('no URL -> no wake button', /hide/.test(c._els.aiWake.className));
+  ok('fresh install -> Drive reads it, free, no setup',
+     /Google Drive/i.test(c._els.aiState.textContent), c._els.aiState.textContent);
+  ok('fresh install -> no wake button', /hide/.test(c._els.aiWake.className));
+
+  c._ls.setItem('rc_cfg_reader', JSON.stringify('off'));
+  c.paintScannerState();
+  ok('off -> says everything is typed in', /typed in by hand/i.test(c._els.aiState.textContent), c._els.aiState.textContent);
+
+  c._ls.setItem('rc_cfg_reader', JSON.stringify('ai'));
+  c.paintScannerState();
+  ok('Claude with no URL -> asks for one', /no scanner URL/i.test(c._els.aiState.textContent), c._els.aiState.textContent);
 
   c._ls.setItem('rc_cfg_aiUrl', JSON.stringify('https://x.workers.dev'));
   c.noteScanOk(); c.paintScannerState();
-  ok('healthy -> says so', /working/i.test(c._els.aiState.textContent), c._els.aiState.textContent);
+  ok('Claude configured -> says so', /Claude is reading/i.test(c._els.aiState.textContent), c._els.aiState.textContent);
 
   const info = { code: 'credit', msg: 'The Anthropic account is out of credit.', fix: 'Top it up.' };
   c.noteScanFail(info); c.paintScannerState();
@@ -107,6 +116,40 @@ console.log('\n== Settings tells the truth about each state ==');
   ok('paused -> explains and offers the wake button',
      /Paused/.test(c._els.aiState.textContent) && /out of credit/.test(c._els.aiState.textContent) && c._els.aiWake.className === 'chip',
      c._els.aiState.textContent);
+}
+
+console.log('\n== which reader is in use ==');
+{
+  const c = freshEnv();
+  ok('a fresh install gets the free one', c.readerMode() === 'drive', c.readerMode());
+
+  const b = freshEnv();
+  b._ls.setItem('rc_cfg_aiUrl', JSON.stringify('https://x.workers.dev'));
+  ok('someone who already set up the Worker keeps Claude', b.readerMode() === 'ai', b.readerMode());
+
+  const d = freshEnv();
+  d._ls.setItem('rc_cfg_aiUrl', JSON.stringify('https://x.workers.dev'));
+  d._ls.setItem('rc_cfg_reader', JSON.stringify('drive'));
+  ok('an explicit choice beats the Worker URL', d.readerMode() === 'drive', d.readerMode());
+
+  const e = freshEnv();
+  e._ls.setItem('rc_cfg_reader', JSON.stringify('off'));
+  ok('off is honoured', e.readerMode() === 'off', e.readerMode());
+}
+
+console.log('\n== Settings shows only what the chosen reader uses ==');
+{
+  const c = freshEnv();
+  c.paintReaderMode();
+  ok('Drive: no Worker URL box', /hide/.test(c._els.aiOnly.className), c._els.aiOnly.className);
+  ok('Drive: no Test button', /hide/.test(c._els.aiTest.className), c._els.aiTest.className);
+  ok('Drive: hint says free', /no charge|free/i.test(c._els.readerHint.textContent), c._els.readerHint.textContent);
+
+  c._ls.setItem('rc_cfg_reader', JSON.stringify('ai'));
+  c.paintReaderMode();
+  ok('Claude: Worker URL box shown', !/hide/.test(c._els.aiOnly.className), c._els.aiOnly.className);
+  ok('Claude: Test button shown', !/hide/.test(c._els.aiTest.className), c._els.aiTest.className);
+  ok('Claude: hint warns about cost', /credit|month/i.test(c._els.readerHint.textContent), c._els.readerHint.textContent);
 }
 
 console.log('\n' + (fail ? 'FAILED ' + fail : 'all ' + pass + ' passed'));

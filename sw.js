@@ -11,7 +11,7 @@
 
 /* Keep in step with APP_VERSION in app.js. Changing it retires every older
    cache on activate. */
-const CACHE = 'receipts-2026-08-24.1';
+const CACHE = 'receipts-2026-08-24.2';
 const SHELL = ['./', './index.html', './styles.css', './app.js', './manifest.webmanifest', './icon-180.png', './icon-512.png'];
 const NET_TIMEOUT = 3500;
 

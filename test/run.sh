@@ -16,6 +16,8 @@ const missing = [...used].filter(id => !have.has(id));
 if (missing.length) { console.log("FAIL missing ids: " + missing.join(", ")); process.exit(1); }
 console.log("ok   all " + used.size + " ids present");'
 
+echo "\n--- receipt parser ---";              node test/receipt-parser.js
+echo "\n--- drive ocr ---";                    node test/drive-ocr.js
 echo "\n--- scanner health and diagnosis ---"; node test/scanner-health.js
 echo "\n--- scan flow ---";                    node test/scan-flow.js
 echo "\n--- worker ---";                       node test/worker.mjs

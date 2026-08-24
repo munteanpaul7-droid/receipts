@@ -177,9 +177,18 @@
     <button class="btn ghost" id="copyUris">Copy both</button>
   </div>
 
-  <h3>AI scanning</h3>
+  <h3>Reading receipts</h3>
   <div class="card">
     <div class="f">
+      <label for="sReader">Who reads the receipt</label>
+      <select id="sReader">
+        <option value="drive">Google Drive &mdash; free, nothing to set up</option>
+        <option value="ai">Claude &mdash; more accurate, needs an Anthropic key</option>
+        <option value="off">Nobody &mdash; I&rsquo;ll type it in</option>
+      </select>
+      <p class="hint" id="readerHint"></p>
+    </div>
+    <div class="f hide" id="aiOnly">
       <label for="sAi">Scanner URL</label>
       <input type="text" id="sAi" placeholder="https://receipt-ocr.xxx.workers.dev" autocomplete="off" spellcheck="false">
       <p class="hint">Your Cloudflare Worker. It holds the Anthropic key so the app never has to.</p>
@@ -191,7 +200,7 @@
         <option value="0">Only when I tap Read</option>
       </select>
     </div>
-    <button class="btn ghost" id="aiTest">Test the scanner</button>
+    <button class="btn ghost hide" id="aiTest">Test the scanner</button>
     <p class="hint" id="aiState"></p>
     <div class="chips">
       <button class="chip hide" id="aiWake">Turn the scanner back on</button>
