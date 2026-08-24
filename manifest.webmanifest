@@ -2,7 +2,7 @@
   "name": "Receipts",
   "short_name": "Receipts",
   "description": "Scan receipts and file them into Google Drive by date.",
-  "start_url": "./index.html",
+  "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",

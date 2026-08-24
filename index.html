@@ -52,7 +52,14 @@
 
   <div class="prev hide" id="prev">
     <img id="prevImg" alt="Receipt preview">
-    <button class="x" id="prevX" aria-label="Remove photo">&times;</button>
+    <div class="pdf hide" id="prevPdf">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+      <div class="t">
+        <b id="prevPdfName">document.pdf</b>
+        <small id="prevPdfMeta">PDF</small>
+      </div>
+    </div>
+    <button class="x" id="prevX" aria-label="Remove attachment">&times;</button>
     <span class="sz" id="prevSz"></span>
   </div>
 

@@ -1,7 +1,7 @@
 /* App-shell cache so the app opens instantly and works with no signal.
    Only same-origin GET requests are cached; Google APIs always go to network. */
 
-const CACHE = 'receipts-v1';
+const CACHE = 'receipts-v2';
 const SHELL = ['./', './index.html', './styles.css', './app.js', './manifest.webmanifest', './icon-180.png', './icon-512.png'];
 
 self.addEventListener('install', (e) => {

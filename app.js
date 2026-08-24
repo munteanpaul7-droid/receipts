@@ -30,8 +30,12 @@ const CSV_NAME = 'receipts-index.csv';
 const CSV_HEADER = ['Date','Merchant','Category','Purpose','Subtotal','TPS','TVQ',
                     'Total','TPS number','TVQ number','File','Drive link','Saved at'];
 
+/* This app's OAuth client, created under munteanpaul7@gmail.com. A web client
+   ID is public by design — it travels in the URL of every sign-in — and there
+   is no client secret in this flow, so it is safe to keep here. Overridable
+   per-device from Settings. */
 const DEFAULTS = {
-  clientId: '',
+  clientId: '74591076439-0hkmtsuqouhn0av8qeeov1u248vtesh5.apps.googleusercontent.com',
   root: 'receipts',
   struct: 'ym',
   tpsRate: '5',
@@ -55,9 +59,35 @@ const S = {
 function cfg(k) { const v = S.get('cfg_' + k, null); return (v === null || v === '') ? DEFAULTS[k] : v; }
 function setCfg(k, v) { S.set('cfg_' + k, v); }
 
+/* Amounts turn up in several shapes on a Quebec keyboard: 1,234.56 and
+   1.234,56 and 114,98 all mean what they look like. Rules, in order:
+   when both separators appear the rightmost one is the decimal point;
+   a lone comma is a thousands mark only when exactly three digits follow
+   it, so 1,234 is a thousand but 114,98 is not; a repeated separator is
+   always a thousands mark; and a lone dot always stays a decimal point,
+   which is what keeps rates like 9.975 intact.                          */
 function num(v) {
   if (v === null || v === undefined) return 0;
-  const n = parseFloat(String(v).replace(/[^0-9.,-]/g, '').replace(',', '.'));
+  let s = String(v).trim();
+  const neg = s.charAt(0) === '-';
+  s = s.replace(/[^0-9.,]/g, '');
+  if (!s) return 0;
+
+  const lastDot = s.lastIndexOf('.');
+  const lastCom = s.lastIndexOf(',');
+  let dec = -1;
+
+  if (lastDot >= 0 && lastCom >= 0) {
+    dec = Math.max(lastDot, lastCom);
+  } else if (lastCom >= 0) {
+    if (s.indexOf(',') === lastCom && !/,\d{3}$/.test(s)) dec = lastCom;
+  } else if (lastDot >= 0) {
+    if (s.indexOf('.') === lastDot) dec = lastDot;
+  }
+
+  const whole = (dec < 0 ? s : s.slice(0, dec)).replace(/[.,]/g, '');
+  const frac = dec < 0 ? '' : s.slice(dec + 1).replace(/[.,]/g, '');
+  const n = parseFloat((neg ? '-' : '') + (whole || '0') + (frac ? '.' + frac : ''));
   return isFinite(n) ? n : 0;
 }
 function money(n) { return '$' + (Math.round(n * 100) / 100).toFixed(2); }
@@ -132,7 +162,14 @@ async function ensureToken() {
    iOS home-screen apps sometimes push window.open out to Safari, which
    breaks the popup handshake. This whole-page redirect always works.     */
 
-function redirectUri() { return location.origin + location.pathname; }
+/* Google matches redirect URIs exactly, so this has to land on one fixed
+   string no matter how the app was opened. A home-screen launch starts at
+   the manifest's start_url and a tapped link usually ends in a bare slash;
+   folding a trailing index.html away makes both produce the directory form
+   that is registered in the Cloud console.                               */
+function redirectUri() {
+  return location.origin + location.pathname.replace(/index\.html?$/i, '');
+}
 
 function startRedirectAuth() {
   const id = cfg('clientId');
@@ -338,6 +375,7 @@ function shrinkImage(file, maxPx) {
 /* ------------------------------------------------------------ app state  */
 
 let pending = null;   // { blob, ext, thumb } for the photo currently attached
+let prevUrl = '';     // object URL backing the preview image, revoked on clear
 
 /* ---------------------------------------------------------------- render */
 
@@ -407,25 +445,52 @@ function updateSums() {
 
 /* ------------------------------------------------------------- form flow */
 
+/* Drops whatever is attached and releases its blob URL. */
+function clearPreview() {
+  if (prevUrl) { URL.revokeObjectURL(prevUrl); prevUrl = ''; }
+  pending = null;
+  $('prev').className = 'prev hide';
+  $('prevImg').className = '';
+  $('prevImg').removeAttribute('src');
+  $('prevPdf').className = 'pdf hide';
+  $('prevSz').className = 'sz';
+}
+
 function resetForm(keepDate) {
   if (!keepDate) $('fDate').value = todayISO();
   $('fTotal').value = ''; $('fName').value = ''; $('fPurpose').value = '';
   $('fTps').value = ''; $('fTvq').value = ''; $('fTpsNo').value = ''; $('fTvqNo').value = '';
-  pending = null;
-  $('prev').className = 'prev hide';
-  $('prevImg').removeAttribute('src');
+  clearPreview();
   updateSums();
 }
 
+/* A PDF has no raster to show, and feeding one to an <img> only ever draws
+   a broken-image icon, so it gets a named card instead. It still uploads
+   exactly as picked.                                                     */
 async function attach(file) {
   if (!file) return;
-  toast('Processing photo...');
-  pending = await shrinkImage(file, parseInt(cfg('maxPx'), 10));
-  const url = URL.createObjectURL(pending.blob);
-  $('prevImg').src = url;
+  const isPdf = file.type === 'application/pdf';
+  toast(isPdf ? 'Attaching PDF...' : 'Processing photo...');
+  const shot = await shrinkImage(file, parseInt(cfg('maxPx'), 10));
+
+  clearPreview();
+  pending = shot;
+  const kb = (pending.blob.size / 1024).toFixed(0) + ' KB';
+
+  if (pending.ext === 'pdf') {
+    $('prevImg').className = 'hide';
+    $('prevPdf').className = 'pdf';
+    $('prevPdfName').textContent = file.name || 'document.pdf';
+    $('prevPdfMeta').textContent = 'PDF · ' + kb + ' · uploads as-is';
+    $('prevSz').className = 'sz hide';
+  } else {
+    prevUrl = URL.createObjectURL(pending.blob);
+    $('prevImg').src = prevUrl;
+    $('prevSz').textContent = kb;
+  }
+
   $('prev').className = 'prev';
-  $('prevSz').textContent = (pending.blob.size / 1024).toFixed(0) + ' KB';
-  toast('Photo attached. Fill in the details.', 'good');
+  toast((isPdf ? 'PDF' : 'Photo') + ' attached. Fill in the details.', 'good');
 }
 
 function collect() {
@@ -600,9 +665,7 @@ function boot() {
   $('libBtn').addEventListener('click', () => $('libIn').click());
   $('camIn').addEventListener('change', (e) => { attach(e.target.files[0]); e.target.value = ''; });
   $('libIn').addEventListener('change', (e) => { attach(e.target.files[0]); e.target.value = ''; });
-  $('prevX').addEventListener('click', () => {
-    pending = null; $('prev').className = 'prev hide'; $('prevImg').removeAttribute('src');
-  });
+  $('prevX').addEventListener('click', clearPreview);
 
   ['fTotal', 'fTps', 'fTvq'].forEach((k) => $(k).addEventListener('input', updateSums));
   $('fCat').addEventListener('change', () => S.set('lastCat', $('fCat').value));
