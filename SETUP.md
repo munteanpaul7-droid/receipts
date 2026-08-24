@@ -111,6 +111,67 @@ just queues; open Settings and tap **Connect Drive** to flush the queue.
 
 ---
 
+## When the AI scanning stops working
+
+The scanner is the one part of this app that leans on something outside your
+phone: a small Cloudflare Worker holding an Anthropic key. Workers get deleted,
+keys get rotated, credit runs out. **None of that stops you filing receipts** —
+photographing, typing, saving and uploading to Drive never touch the scanner.
+It only fills the fields in for you.
+
+The app now says which of those things went wrong, in the scan strip on the New
+tab and again under **Settings → AI scanning**:
+
+| What it says | What actually happened | What fixes it |
+|---|---|---|
+| The scanner never answered | The Worker is deleted, asleep, or the URL is wrong | Check **Scanner URL**, then **Test the scanner** |
+| Running but has no Anthropic key | The Worker lost its secret | Add `ANTHROPIC_API_KEY` as a secret on the Worker |
+| Anthropic rejected the key | The key was revoked or rotated | Make a new key, update the Worker's secret |
+| Out of credit | The Anthropic account is empty | Top it up; the scanner returns by itself |
+| Rate-limiting | Too many reads too fast | Wait a minute and tap **Read** |
+| Refuses requests from this address | The app is on a URL the Worker does not allow | Add that address to `ALLOWED_ORIGINS` in the Worker |
+| Asking for a model that no longer exists | Claude retired that model | Change `MODEL` in `worker/receipt-ocr.js`, redeploy |
+
+After three failures in a row the app **stops asking**. It will not paint a red
+error over every receipt you file; it says the scanner is off, gets out of the
+way, and tries again by itself a quarter of an hour later. Tapping **Read** on
+any receipt tries immediately, and one success switches it straight back on —
+as does **Turn the scanner back on** in Settings.
+
+**Test the scanner** now asks two questions instead of one: it first checks the
+Worker is alive at all (a plain `GET` that never touches Anthropic), then sends
+a small drawn receipt through the whole chain. That is what separates "the
+Worker is gone" from "the Worker is fine but the key is dead".
+
+The Worker also looks after itself a little: it retries once on a rate limit or
+a hiccup at Anthropic, and if the API ever rejects one of the optional
+parameters it sends — `output_config`, `fallbacks`, the beta header — it
+immediately retries without them. A retired parameter costs a little quality,
+not the whole feature.
+
+## If the app itself misbehaves
+
+**Settings → App** shows the version on the phone and has two buttons.
+
+- **Check for update** looks for a newer build and, if one is ready, applies it
+  and reloads. GitHub Pages takes about a minute to publish after a push.
+- **Repair app** throws away the phone's stored copy of the app and fetches it
+  fresh. **Your receipts, settings, remembered merchants and anything waiting
+  to upload are all kept** — they live in separate storage that this does not
+  touch. Only the cached copy of the app itself is discarded.
+
+If the app fails so early that Settings is unreachable, a red banner with a
+**Repair the app** button appears on the first screen instead.
+
+The stored copy no longer wins over the network. Earlier versions served the
+cached app first and refreshed in the background, which meant a bad build, once
+saved, kept opening forever. The app is now fetched fresh whenever the network
+answers within a few seconds, and the stored copy is used only when it does
+not — so it still opens with no signal, but it can no longer get stuck on a
+broken version.
+
+---
+
 ## Notes
 
 - The app requests the `drive.file` permission only. It can see and touch
@@ -133,8 +194,20 @@ just queues; open Settings and tap **Connect Drive** to flush the queue.
 From `receipts-app/`:
 
 ```bash
+sh test/run.sh                                  # ~2 seconds, no dependencies
 git add -A && git commit -m "your change" && git push
 ```
 
-GitHub Pages redeploys in about a minute; the phone picks up the new version
-the second time you open it.
+GitHub Pages redeploys in about a minute. Open the app and tap
+**Settings → App → Check for update** to pull it in straight away, or just
+reopen the app.
+
+Bump `APP_VERSION` in `app.js` and the matching `CACHE` name in `sw.js` when
+you change the app, so the phone can tell you which build it is running and
+old caches get retired.
+
+`test/run.sh` checks the JavaScript parses, that every element `app.js` reaches
+for actually exists in `index.html`, and that the scanner behaves when the
+scanner is broken — it runs `app.js` and the Worker against a stubbed network
+and asserts each failure produces the right diagnosis, that hopeless failures
+are not retried, and that the form keeps working throughout.

@@ -86,9 +86,22 @@ const DEFAULTS = {
   maxPx: '1600'
 };
 
+/* Bumped whenever app.js, index.html or styles.css change. Shown in Settings
+   so "did the update actually land" is a question you can answer from the
+   phone, and used by the service worker to name its cache. */
+const APP_VERSION = '2026-08-24.1';
+
 /* ------------------------------------------------------------- utilities */
 
 const $ = (id) => document.getElementById(id);
+
+/* For elements added after the app first shipped. During an update a phone can
+   briefly hold a new app.js beside an older index.html; reaching for a missing
+   element would throw and take the whole startup with it. This turns that into
+   a no-op, which is the difference between one dead button and a dead app. */
+const NULL_EL = { value: '', textContent: '', className: 'hide', disabled: false,
+                  addEventListener() {}, appendChild() {} };
+const $opt = (id) => $(id) || NULL_EL;
 
 const S = {
   get(k, d) {
@@ -403,33 +416,52 @@ const qAll = () => qOp('readonly', (s) => s.getAll());
 
 /* ------------------------------------------------------------ image prep */
 
+/* Canvas work on a phone is where this app is most likely to stall: a very
+   large photo, a browser under memory pressure, and toBlob simply never
+   calls back. Every exit path below settles the promise, and a watchdog
+   settles it anyway if none of them fire — a receipt uploaded at full size
+   beats an app frozen on "Processing photo".                              */
 function shrinkImage(file, maxPx) {
   return new Promise((resolve) => {
     if (file.type === 'application/pdf') return resolve({ blob: file, ext: 'pdf', thumb: '' });
+
+    let settled = false;
     const url = URL.createObjectURL(file);
+    const done = (out) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(watchdog);
+      try { URL.revokeObjectURL(url); } catch (e) {}
+      resolve(out);
+    };
+    const watchdog = setTimeout(() => done({ blob: file, ext: file.type === 'image/png' ? 'png' : 'jpg', thumb: '' }), 20000);
+
     const img = new Image();
     img.onload = () => {
-      const scale = Math.min(1, maxPx / Math.max(img.width, img.height));
-      const w = Math.max(1, Math.round(img.width * scale));
-      const h = Math.max(1, Math.round(img.height * scale));
-      const c = document.createElement('canvas');
-      c.width = w; c.height = h;
-      const ctx = c.getContext('2d');
-      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);
-      ctx.drawImage(img, 0, 0, w, h);
+      try {
+        const scale = Math.min(1, maxPx / Math.max(img.width, img.height));
+        const w = Math.max(1, Math.round(img.width * scale));
+        const h = Math.max(1, Math.round(img.height * scale));
+        const c = document.createElement('canvas');
+        c.width = w; c.height = h;
+        const ctx = c.getContext('2d');
+        ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, w, h);
 
-      const t = document.createElement('canvas');
-      const ts = Math.min(1, 120 / Math.max(w, h));
-      t.width = Math.max(1, Math.round(w * ts)); t.height = Math.max(1, Math.round(h * ts));
-      t.getContext('2d').drawImage(c, 0, 0, t.width, t.height);
-      const thumb = t.toDataURL('image/jpeg', 0.6);
+        const t = document.createElement('canvas');
+        const ts = Math.min(1, 120 / Math.max(w, h));
+        t.width = Math.max(1, Math.round(w * ts)); t.height = Math.max(1, Math.round(h * ts));
+        t.getContext('2d').drawImage(c, 0, 0, t.width, t.height);
+        const thumb = t.toDataURL('image/jpeg', 0.6);
 
-      c.toBlob((blob) => {
-        URL.revokeObjectURL(url);
-        resolve({ blob: blob || file, ext: 'jpg', thumb });
-      }, 'image/jpeg', 0.82);
+        c.toBlob((blob) => done({ blob: blob || file, ext: 'jpg', thumb }), 'image/jpeg', 0.82);
+      } catch (e) {
+        /* Out of memory, or a canvas the browser refuses to size. Upload the
+           original rather than losing the receipt. */
+        done({ blob: file, ext: 'jpg', thumb: '' });
+      }
     };
-    img.onerror = () => { URL.revokeObjectURL(url); resolve({ blob: file, ext: 'jpg', thumb: '' }); };
+    img.onerror = () => done({ blob: file, ext: 'jpg', thumb: '' });
     img.src = url;
   });
 }
@@ -560,7 +592,15 @@ async function attach(file) {
   if (!file) return;
   const isPdf = file.type === 'application/pdf';
   toast(isPdf ? 'Attaching PDF...' : 'Processing photo...');
-  const shot = await shrinkImage(file, parseInt(cfg('maxPx'), 10));
+
+  let shot;
+  try {
+    shot = await shrinkImage(file, parseInt(cfg('maxPx'), 10));
+  } catch (e) {
+    /* shrinkImage is written not to reject, but if it ever does, the photo
+       still has to reach Drive — attach the original untouched. */
+    shot = { blob: file, ext: isPdf ? 'pdf' : 'jpg', thumb: '' };
+  }
 
   clearPreview();
   pending = shot;
@@ -582,6 +622,12 @@ async function attach(file) {
 
   if (isPdf || !cfg('aiUrl')) {
     toast((isPdf ? 'PDF' : 'Photo') + ' attached. Fill in the details.', 'good');
+  } else if (scannerOffline()) {
+    /* The scanner failed its way out of the loop earlier. Say so once, in
+       passing, and get out of the way of the form. */
+    const h = scanHealth();
+    setScan('', 'Scanner is off for now — ' + (h.msg || 'it stopped answering.') +
+               ' Type the details in, or tap Read to try it again.');
   } else if (cfg('autoScan') === '1') {
     scanReceipt(false);
   } else {
@@ -589,13 +635,145 @@ async function attach(file) {
   }
 }
 
-/* ------------------------------------------------------- AI receipt scan */
+/* ------------------------------------------------------- AI receipt scan
+
+   The scanner is the only part of this app that depends on someone else's
+   server staying up: a Cloudflare Worker holding an Anthropic key. Workers
+   get deleted, keys get rotated, bills go unpaid. When that happens the
+   receipts still have to get filed, so the rule throughout this section is
+   that reading a receipt is a convenience and typing one is the product.
+   Nothing below is allowed to block the form, and no failure is reported as
+   a bare status code — every one of them names what broke and what to do.  */
+
+/* Three failures in a row and the app stops asking on every photo; it goes
+   quiet for a quarter of an hour and then tries again by itself. Without
+   this, a Worker that has been deleted paints a red error over every single
+   receipt you file, which is what makes a working app feel broken.        */
+const SCAN_FAIL_LIMIT = 3;
+const SCAN_COOLDOWN_MS = 15 * 60 * 1000;
+const SCAN_TIMEOUT_MS = 45000;
+
+function scanHealth() { return S.get('scanHealth', { fails: 0, until: 0, code: '', msg: '', fix: '' }); }
+
+function scannerOffline() {
+  const h = scanHealth();
+  return h.fails >= SCAN_FAIL_LIMIT && Date.now() < h.until;
+}
+
+function noteScanOk() { S.set('scanHealth', { fails: 0, until: 0, code: '', msg: '', fix: '' }); }
+
+function noteScanFail(info) {
+  const fails = scanHealth().fails + 1;
+  S.set('scanHealth', {
+    fails,
+    until: fails >= SCAN_FAIL_LIMIT ? Date.now() + SCAN_COOLDOWN_MS : 0,
+    code: info.code, msg: info.msg, fix: info.fix
+  });
+}
+
+/* The Settings line that says where the scanner stands. It is the one place
+   that states out loud what failed last time and which knob fixes it. */
+function paintScannerState() {
+  const el = $opt('aiState');
+  const wake = $opt('aiWake');
+  const h = scanHealth();
+
+  if (!cfg('aiUrl')) {
+    el.textContent = 'No scanner set up. Receipts get typed in by hand, which needs nothing but this app.';
+    wake.className = 'chip hide';
+  } else if (scannerOffline()) {
+    const mins = Math.max(1, Math.round((h.until - Date.now()) / 60000));
+    el.textContent = 'Paused after ' + h.fails + ' failures in a row. ' + h.msg + ' ' + h.fix +
+      ' It tries again by itself in about ' + mins + ' minute' + (mins === 1 ? '' : 's') + '.';
+    wake.className = 'chip';
+  } else if (h.fails > 0) {
+    el.textContent = 'Last read failed. ' + h.msg + ' ' + h.fix;
+    wake.className = 'chip hide';
+  } else {
+    el.textContent = 'Scanner is set up and working.';
+    wake.className = 'chip hide';
+  }
+}
+
+/* A hung request is worse than a failed one — it leaves the spinner turning
+   with no way back — so every call to the scanner carries its own deadline. */
+function fetchWithTimeout(url, opts, ms) {
+  if (typeof AbortController === 'undefined') return fetch(url, opts);
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), ms);
+  return fetch(url, Object.assign({}, opts, { signal: ac.signal }))
+    .finally(() => clearTimeout(timer));
+}
+
+/* What broke, and what to do about it. The Worker sends a short code for
+   anything it can name; a status is only guessed from when it cannot. Every
+   entry ends with a next step, because "scanner returned 502" tells the
+   person holding the phone nothing they can act on.                        */
+const SCAN_CAUSES = {
+  no_key:      { msg: 'The scanner is running but has no Anthropic key.',
+                 fix: 'Add ANTHROPIC_API_KEY as a secret on the Cloudflare Worker.' },
+  bad_key:     { msg: 'Anthropic rejected the scanner\u2019s key.',
+                 fix: 'Create a new API key and update the Worker\u2019s secret.' },
+  credit:      { msg: 'The Anthropic account is out of credit.',
+                 fix: 'Top it up — the scanner starts working again on its own.' },
+  rate_limit:  { msg: 'Anthropic is rate-limiting the scanner.',
+                 fix: 'Wait a minute, then tap Read.', transient: true },
+  upstream:    { msg: 'Anthropic did not answer the scanner.',
+                 fix: 'Usually passes by itself. Tap Read to try again.', transient: true },
+  bad_model:   { msg: 'The scanner is asking for a Claude model that no longer exists.',
+                 fix: 'Update MODEL in worker/receipt-ocr.js and redeploy the Worker.' },
+  bad_request: { msg: 'Anthropic turned the request down as malformed.',
+                 fix: 'The Worker is out of date. Redeploy worker/receipt-ocr.js.' },
+  origin:      { msg: 'The scanner refuses requests from this address.',
+                 fix: 'Add ' + location.origin + ' to ALLOWED_ORIGINS in the Worker.' },
+  refused:     { msg: 'Claude declined to read that image.',
+                 fix: 'Fill this one in by hand.' },
+  no_fields:   { msg: 'Nothing came back for that photo.',
+                 fix: 'Try a straighter, brighter photo — or type it in.' },
+  too_big:     { msg: 'That photo is too large for the scanner.',
+                 fix: 'Lower Image size in Settings and take it again.' }
+};
+
+function explainScanFailure(status, data, netErr) {
+  if (netErr) {
+    return navigator.onLine
+      ? { code: 'unreachable',
+          msg: 'The scanner never answered. It may have been deleted, or its address changed.',
+          fix: 'Check the Scanner URL in Settings, then tap Test the scanner.' }
+      : { code: 'offline',
+          msg: 'No connection, so the receipt cannot be read here.',
+          fix: 'Type it in — saving works offline and uploads later.',
+          transient: true };
+  }
+
+  const code = data && data.code;
+  if (code && SCAN_CAUSES[code]) return Object.assign({ code }, SCAN_CAUSES[code]);
+
+  /* No code came back, so this is something between us and the Worker
+     rather than the Worker itself. */
+  if (status === 401 || status === 403) {
+    return Object.assign({ code: 'origin' }, SCAN_CAUSES.origin);
+  }
+  if (status === 404) {
+    return { code: 'unreachable',
+             msg: 'There is no scanner at that address.',
+             fix: 'Check the Scanner URL in Settings.' };
+  }
+  if (status >= 500) {
+    return { code: 'upstream',
+             msg: 'The scanner failed on its side.',
+             fix: 'Tap Read to try again, or type it in.', transient: true };
+  }
+  return { code: 'unknown',
+           msg: (data && data.error) ? String(data.error).slice(0, 90) : 'The scanner returned ' + (status || 'nothing') + '.',
+           fix: 'Type it in — that always works.' };
+}
 
 function setScan(state, msg) {
   $('scanRow').className = 'scan' + (state === 'good' ? ' good' : state === 'bad' ? ' bad' : '');
   $('scanSpin').className = state === 'busy' ? 'spin' : 'spin hide';
   $('scanMsg').textContent = msg;
-  $('scanBtn').textContent = state === 'busy' ? 'Reading' : 'Read again';
+  $('scanBtn').textContent = state === 'busy' ? 'Reading' : state === 'good' ? 'Read again' : 'Read';
   $('scanBtn').disabled = state === 'busy';
 }
 
@@ -654,6 +832,25 @@ function applyScan(f) {
   return filled.filter(Boolean);
 }
 
+/* One attempt at the scanner. Resolves with what happened rather than
+   throwing, so the decision about retrying lives in one place. */
+async function tryScan(url) {
+  const image = await blobToBase64(pending.blob);
+  let res;
+  try {
+    res = await fetchWithTimeout(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image, mediaType: pending.blob.type || 'image/jpeg' })
+    }, SCAN_TIMEOUT_MS);
+  } catch (e) {
+    return { fail: explainScanFailure(0, null, true) };
+  }
+  const data = await res.json().catch(() => null);
+  if (res.ok && data && data.ok) return { fields: data.fields || {} };
+  return { fail: explainScanFailure(res.status, data, false) };
+}
+
 async function scanReceipt(manual) {
   if (!pending || pending.ext === 'pdf') {
     if (manual) toast('Attach a photo first.', 'bad');
@@ -661,34 +858,42 @@ async function scanReceipt(manual) {
   }
   const url = cfg('aiUrl');
   if (!url) {
-    setScan('bad', 'No scanner set up yet — add its URL in Settings.');
+    setScan('', 'No scanner set up. Fill the fields in below — that always works.');
     return;
   }
 
   setScan('busy', 'Reading receipt…');
-  try {
-    const image = await blobToBase64(pending.blob);
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image, mediaType: pending.blob.type || 'image/jpeg' })
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || !data.ok) throw new Error(data.error || ('scanner returned ' + res.status));
 
-    const f = data.fields || {};
-    const filled = applyScan(f);
+  /* A rate limit or a hiccup at Anthropic is worth exactly one more try. A
+     missing key or a deleted Worker will not fix itself in 1.5 seconds. */
+  let out = await tryScan(url);
+  if (out.fail && out.fail.transient && out.fail.code !== 'offline') {
+    setScan('busy', 'Scanner is busy — trying once more…');
+    await new Promise((r) => setTimeout(r, 1500));
+    out = await tryScan(url);
+  }
 
-    if (f.confidence === 'low') {
-      setScan('bad', f.note || 'Hard to read — check every field before saving.');
-    } else if (!filled.length) {
-      setScan('bad', 'Nothing new to fill in. Check the fields yourself.');
-    } else {
-      setScan('good', 'Filled in ' + filled.join(', ') +
-        (f.confidence === 'medium' ? '. Worth a quick check.' : '. Check it over.'));
-    }
-  } catch (e) {
-    setScan('bad', 'Could not read it: ' + String(e.message || e).slice(0, 80));
+  if (out.fail) {
+    noteScanFail(out.fail);
+    setScan('bad', out.fail.msg + ' ' + out.fail.fix +
+      (scannerOffline() ? ' Pausing the scanner for now — everything else keeps working.' : ''));
+    paintScannerState();
+    return;
+  }
+
+  noteScanOk();
+  paintScannerState();
+
+  const f = out.fields;
+  const filled = applyScan(f);
+
+  if (f.confidence === 'low') {
+    setScan('bad', f.note || 'Hard to read — check every field before saving.');
+  } else if (!filled.length) {
+    setScan('bad', 'Nothing new to fill in. Check the fields yourself.');
+  } else {
+    setScan('good', 'Filled in ' + filled.join(', ') +
+      (f.confidence === 'medium' ? '. Worth a quick check.' : '. Check it over.'));
   }
 }
 
@@ -871,6 +1076,7 @@ function boot() {
   $('sAuto').value = cfg('autoScan');
   $('sOrigin').value = location.origin;
   $('sRedir').value = redirectUri();
+  $opt('sVer').value = APP_VERSION;
 
   document.querySelectorAll('.tabs button').forEach((b) => {
     b.addEventListener('click', () => showTab(b.dataset.tab));
@@ -948,10 +1154,13 @@ function boot() {
 
   $('saveSet').addEventListener('click', () => {
     const prevRoot = cfg('root');
+    const prevAi = cfg('aiUrl');
     setCfg('clientId', $('sCid').value.trim());
     setCfg('root', $('sRoot').value.trim() || 'receipts');
     setCfg('struct', $('sStruct').value);
     setCfg('aiUrl', $('sAi').value.trim().replace(/\/+$/, ''));
+    /* Pointing at a different Worker makes the old failures meaningless. */
+    if (prevAi !== cfg('aiUrl')) noteScanOk();
     setCfg('autoScan', $('sAuto').value);
     setCfg('taxGroup', $('sTaxDefault').value);
     setCfg('tpsRate', $('sTps').value.trim() || '5');
@@ -960,11 +1169,13 @@ function boot() {
     if (prevRoot !== cfg('root')) S.del('rootId');
     applyTaxGroup($('fTax').value, false);
     paintStatus();
+    paintScannerState();
     toast('Settings saved.', 'good');
   });
 
-  /* Sends a small drawn receipt so a green result proves the whole chain:
-     phone -> Worker -> Claude -> back, key and all. */
+  /* Two questions, asked in that order: is the Worker there at all, and can
+     it reach Claude. Answering them separately is what turns "the scanner
+     doesn't work" into a sentence naming the thing to go and fix. */
   $('aiTest').addEventListener('click', async () => {
     const url = $('sAi').value.trim().replace(/\/+$/, '');
     if (!url) { toast('Paste the scanner URL first.', 'bad'); return; }
@@ -972,6 +1183,26 @@ function boot() {
     const btn = $('aiTest');
     btn.disabled = true; btn.textContent = 'Testing…';
     try {
+      /* Any HTTP reply at all means the Worker exists. An older Worker
+         answers GET with 405, which still proves it is alive. */
+      let health = null, reachable = false;
+      try {
+        const hr = await fetchWithTimeout(url, { method: 'GET' }, 15000);
+        reachable = true;
+        health = await hr.json().catch(() => null);
+      } catch (e) { reachable = false; }
+
+      if (!reachable) {
+        const info = explainScanFailure(0, null, true);
+        noteScanFail(info);
+        throw new Error(info.msg + ' ' + info.fix);
+      }
+      if (health && health.keyConfigured === false) {
+        const info = Object.assign({ code: 'no_key' }, SCAN_CAUSES.no_key);
+        noteScanFail(info);
+        throw new Error(info.msg + ' ' + info.fix);
+      }
+
       const c = document.createElement('canvas');
       c.width = 400; c.height = 300;
       const x = c.getContext('2d');
@@ -987,21 +1218,76 @@ function boot() {
       x.fillText('TOTAL            11.50', 20, 250);
       const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.9));
       const image = await blobToBase64(blob);
-      const res = await fetch(url, {
+      const res = await fetchWithTimeout(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ image, mediaType: 'image/jpeg' })
-      });
-      const d = await res.json().catch(() => ({}));
-      if (!res.ok || !d.ok) throw new Error(d.error || ('returned ' + res.status));
+      }, SCAN_TIMEOUT_MS);
+      const d = await res.json().catch(() => null);
+      if (!res.ok || !d || !d.ok) {
+        const info = explainScanFailure(res.status, d, false);
+        noteScanFail(info);
+        throw new Error(info.msg + ' ' + info.fix);
+      }
+      noteScanOk();
       const f = d.fields || {};
       toast('Scanner works. It read ' + (f.merchant || '?') + ', total ' +
             (f.total === null ? '?' : f.total) + ', ' + (f.tax_group || '?') + '.', 'good');
     } catch (e) {
-      toast('Scanner test failed: ' + String(e.message || e).slice(0, 100), 'bad');
+      toast(String(e.message || e).slice(0, 140), 'bad');
     } finally {
       btn.disabled = false; btn.textContent = 'Test the scanner';
+      paintScannerState();
     }
+  });
+
+  /* The pause is a convenience, never a lock. This clears it on demand so a
+     scanner you have just fixed is usable without waiting out the cooldown. */
+  $opt('aiWake').addEventListener('click', () => {
+    noteScanOk();
+    paintScannerState();
+    toast('Scanner switched back on.', 'good');
+  });
+
+  /* The two halves of getting out of a bad build. Neither touches receipts,
+     settings or the upload queue — those live in localStorage and IndexedDB,
+     and only the stored copy of the app itself is thrown away. */
+  $opt('updBtn').addEventListener('click', async () => {
+    const btn = $opt('updBtn');
+    btn.disabled = true; btn.textContent = 'Checking…';
+    try {
+      if (!('serviceWorker' in navigator)) {
+        toast('This browser keeps no copy of the app, so it is always current.');
+        return;
+      }
+      const reg = await navigator.serviceWorker.getRegistration();
+      if (!reg) { toast('Nothing stored yet — this is the current version.'); return; }
+      await reg.update();
+
+      /* A build that has finished downloading is applied here and now rather
+         than left waiting for a cold start — being told an update exists but
+         not getting it is exactly the stuck feeling this button is for. */
+      if (reg.waiting) {
+        reg.waiting.postMessage('skipWaiting');
+        toast('Newer version installed. Reloading…', 'good');
+        setTimeout(() => location.reload(), 600);
+        return;
+      }
+      if (reg.installing) {
+        toast('A newer version is downloading. Tap this again in a moment.', 'good');
+        return;
+      }
+      toast('Version ' + APP_VERSION + ' is the newest there is.', 'good');
+    } catch (e) {
+      toast('Could not check for an update: ' + String(e.message || e).slice(0, 80), 'bad');
+    } finally {
+      btn.disabled = false; btn.textContent = 'Check for update';
+    }
+  });
+
+  $opt('fixBtn').addEventListener('click', () => {
+    if (!confirm('Repair the app?\n\nReceipts, settings and anything waiting to upload are all kept. The app reloads with a fresh copy of itself.')) return;
+    repairApp();
   });
 
   $('csvBtn').addEventListener('click', () => {
@@ -1025,6 +1311,7 @@ function boot() {
   paintMerchants();
   paintHistory();
   paintStatus();
+  paintScannerState();
   updateSums();
 
   if (cameBack) {
@@ -1044,8 +1331,77 @@ function boot() {
   window.addEventListener('online', () => flushQueue(false));
 
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('./sw.js').catch(() => {});
+    navigator.serviceWorker.register('./sw.js').then((reg) => {
+      /* Say so when a newer build lands behind this one. The service worker
+         takes over immediately, but the page already running keeps the code
+         it started with, so the honest thing to promise is "next time". */
+      reg.addEventListener('updatefound', () => {
+        const sw = reg.installing;
+        if (!sw) return;
+        sw.addEventListener('statechange', () => {
+          if (sw.state === 'installed' && navigator.serviceWorker.controller) {
+            toast('A new version is ready. It is used next time you open the app.', 'good');
+          }
+        });
+      });
+    }).catch(() => {});
   }
 }
 
-document.addEventListener('DOMContentLoaded', boot);
+/* Throws away every stored copy of the app and reloads. Receipts, settings
+   and the upload queue live in localStorage and IndexedDB and are untouched;
+   only the service worker and its caches go. Deliberately defined outside
+   boot() so it still works when boot() is the thing that broke. */
+async function repairApp() {
+  try {
+    if ('serviceWorker' in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map((r) => r.unregister()));
+    }
+    if (window.caches) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((k) => caches.delete(k)));
+    }
+  } catch (e) { /* Reload regardless — a half-cleared cache beats the old one. */ }
+  /* The query string defeats any copy the browser itself is still holding.
+     redirectUri() ignores the query, so Google sign-in is unaffected. */
+  location.replace(location.pathname + '?fresh=' + Date.now());
+}
+
+/* A thrown error must never leave a screen that has quietly stopped
+   responding — that is the one failure you cannot diagnose from a phone.
+   These say what happened and point at the button that fixes it. */
+function reportCrash(what) {
+  const msg = String(what || 'Something went wrong').slice(0, 110);
+  try { toast(msg + ' — if this keeps happening, tap Repair app in Settings.', 'bad'); }
+  catch (e) { /* Too early for the DOM; the console entry is all there is. */ }
+}
+
+window.addEventListener('error', (e) => reportCrash(e && e.message));
+window.addEventListener('unhandledrejection', (e) => {
+  const r = e && e.reason;
+  reportCrash(r && (r.message || r));
+});
+
+document.addEventListener('DOMContentLoaded', () => {
+  try {
+    boot();
+  } catch (e) {
+    /* Half-wired listeners are worse than none, so make the state obvious
+       and put the way out on screen rather than in a toast that fades. */
+    reportCrash(e && e.message);
+    /* Settings may never have been wired up, so the way out cannot be a
+       button in Settings. Put it in the banner and make it do the work. */
+    const warn = $('setupWarn');
+    if (warn) {
+      warn.className = 'banner bad';
+      warn.innerHTML = '';
+      warn.appendChild(document.createTextNode('The app did not start properly. '));
+      const fix = document.createElement('button');
+      fix.className = 'chip';
+      fix.textContent = 'Repair the app';
+      fix.addEventListener('click', repairApp);
+      warn.appendChild(fix);
+    }
+  }
+});

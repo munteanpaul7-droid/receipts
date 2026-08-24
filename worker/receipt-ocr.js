@@ -7,11 +7,21 @@
  * Deploy: Cloudflare dashboard -> Workers -> Create -> paste this file.
  * Then Settings -> Variables -> add a SECRET named ANTHROPIC_API_KEY.
  * Never put the key in this file — a secret in source is a leaked secret.
+ *
+ * Two habits here exist because the phone is often far from a laptop:
+ *   - GET returns a health report, so "Test the scanner" can tell "the Worker
+ *     is gone" apart from "the Worker is up but Claude is refusing us".
+ *   - Every error carries a short `code`. The app turns codes into a sentence
+ *     telling you which knob to turn; a bare 502 tells you nothing.
  */
+
+const VERSION = '2026-08-24';
 
 const ALLOWED_ORIGINS = [
   'https://munteanpaul7-droid.github.io'
 ];
+
+const MODEL = 'claude-opus-5';
 
 /* Kept in step with TAX_GROUPS and CATEGORIES in app.js. */
 const TAX_CODES = ['QC','ON','AB','BC','MB','NB','NL','NS','NT','NU','PE','SK','YT',''];
@@ -71,7 +81,7 @@ function cors(origin) {
   const ok = ALLOWED_ORIGINS.indexOf(origin) >= 0;
   return {
     'Access-Control-Allow-Origin': ok ? origin : ALLOWED_ORIGINS[0],
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
     'Access-Control-Max-Age': '86400',
     'Vary': 'Origin'
@@ -85,89 +95,188 @@ function json(body, status, origin) {
   });
 }
 
+function fail(code, error, status, origin, extra) {
+  return json(Object.assign({ ok: false, code, error }, extra || {}), status, origin);
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/* An HTTP status from Anthropic, turned into something the phone can act on.
+   The split that matters to a user is "wait" versus "go fix something". */
+function classify(status, detail) {
+  const d = String(detail || '').toLowerCase();
+  if (status === 401 || status === 403) return { code: 'bad_key', retry: false };
+  if (status === 402) return { code: 'credit', retry: false };
+  if (status === 429) {
+    /* Anthropic uses 429 both for "too fast" and for "out of credit". They
+       need opposite advice, so read the body rather than the status alone. */
+    if (d.indexOf('credit') >= 0 || d.indexOf('billing') >= 0) return { code: 'credit', retry: false };
+    return { code: 'rate_limit', retry: true };
+  }
+  if (status === 400) return { code: 'bad_request', retry: false };
+  if (status === 404) return { code: 'bad_model', retry: false };
+  if (status === 413) return { code: 'too_big', retry: false };
+  if (status >= 500) return { code: 'upstream', retry: true };
+  return { code: 'upstream', retry: false };
+}
+
+/* Signals that the API rejected one of the optional parameters rather than the
+   request itself — the shape most likely to rot as the API moves on. When this
+   happens we retry once with the plainest request that can still do the job,
+   so a parameter being retired degrades the scan instead of ending it. */
+function looksLikeParamDrift(detail) {
+  const d = String(detail || '').toLowerCase();
+  if (d.indexOf('unexpected') < 0 && d.indexOf('unsupported') < 0 &&
+      d.indexOf('unrecognized') < 0 && d.indexOf('not supported') < 0 &&
+      d.indexOf('invalid_request_error') < 0) return false;
+  return d.indexOf('fallback') >= 0 || d.indexOf('output_config') >= 0 ||
+         d.indexOf('effort') >= 0 || d.indexOf('beta') >= 0 ||
+         d.indexOf('thinking') >= 0 || d.indexOf('strict') >= 0;
+}
+
+function buildPayload(mediaType, data, plain) {
+  const payload = {
+    model: MODEL,
+    max_tokens: 8000,
+    system: SYSTEM,
+    tools: [{
+      name: 'report_receipt',
+      description: 'Report the fields read from the receipt image.',
+      strict: true,
+      input_schema: RECEIPT_SCHEMA
+    }],
+    tool_choice: { type: 'tool', name: 'report_receipt' },
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'image', source: { type: 'base64', media_type: mediaType, data } },
+        { type: 'text', text: 'Read this receipt and report its fields.' }
+      ]
+    }]
+  };
+  /* Reading a receipt is not a reasoning problem, so effort stays low; the
+     fallback keeps a safety refusal from turning into a dead end. Both are
+     dropped in the plain retry — neither is needed to read a receipt. */
+  if (!plain) {
+    payload.output_config = { effort: 'low' };
+    payload.fallbacks = 'default';
+  }
+  return payload;
+}
+
+function headers(key, plain) {
+  const h = {
+    'Content-Type': 'application/json',
+    'x-api-key': key,
+    'anthropic-version': '2023-06-01'
+  };
+  if (!plain) h['anthropic-beta'] = 'server-side-fallback-2026-07-01';
+  return h;
+}
+
+/* One call, with a single retry on the two failures that are worth waiting
+   out. More than one retry would just make the phone sit there longer. */
+async function callClaude(key, mediaType, data, plain) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let res;
+    try {
+      res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: headers(key, plain),
+        body: JSON.stringify(buildPayload(mediaType, data, plain))
+      });
+    } catch (e) {
+      if (attempt === 0) { await sleep(700); continue; }
+      return { netError: true };
+    }
+    if (res.ok) return { res };
+
+    const detail = (await res.text()).slice(0, 400);
+    const kind = classify(res.status, detail);
+    if (kind.retry && attempt === 0) { await sleep(res.status === 429 ? 1500 : 700); continue; }
+    return { status: res.status, detail, kind };
+  }
+  return { netError: true };
+}
+
 export default {
   async fetch(request, env) {
     const origin = request.headers.get('Origin') || '';
 
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors(origin) });
-    if (request.method !== 'POST') return json({ error: 'POST an image to this URL.' }, 405, origin);
 
     /* The browser enforces CORS, but a non-browser client ignores it, so the
        origin is checked here too. This is what keeps the key from becoming a
        free Claude endpoint for anyone who finds the URL. */
     if (origin && ALLOWED_ORIGINS.indexOf(origin) < 0) {
-      return json({ error: 'Origin not allowed.' }, 403, origin);
+      return fail('origin', 'This Worker does not accept requests from ' + origin + '.', 403, origin);
     }
+
+    /* A reachable GET is the proof that the Worker itself is alive. It costs
+       nothing and never touches Anthropic, so it stays honest even when the
+       key is the broken part. */
+    if (request.method === 'GET' || request.method === 'HEAD') {
+      return json({
+        ok: true,
+        service: 'receipt-ocr',
+        version: VERSION,
+        model: MODEL,
+        keyConfigured: !!env.ANTHROPIC_API_KEY
+      }, 200, origin);
+    }
+
+    if (request.method !== 'POST') {
+      return fail('method', 'POST an image to this URL.', 405, origin);
+    }
+
     if (!env.ANTHROPIC_API_KEY) {
-      return json({ error: 'Worker is missing the ANTHROPIC_API_KEY secret.' }, 500, origin);
+      return fail('no_key',
+        'The Worker has no ANTHROPIC_API_KEY secret. Add it in the Cloudflare dashboard under Settings, Variables.',
+        500, origin);
     }
 
     let body;
     try { body = await request.json(); }
-    catch (e) { return json({ error: 'Body must be JSON.' }, 400, origin); }
+    catch (e) { return fail('bad_body', 'Body must be JSON.', 400, origin); }
 
     const data = body && body.image;
     const mediaType = (body && body.mediaType) || 'image/jpeg';
-    if (!data || typeof data !== 'string') return json({ error: 'Missing image.' }, 400, origin);
+    if (!data || typeof data !== 'string') return fail('bad_body', 'Missing image.', 400, origin);
     if (['image/jpeg','image/png','image/webp','image/gif'].indexOf(mediaType) < 0) {
-      return json({ error: 'Unsupported image type.' }, 400, origin);
+      return fail('bad_body', 'Unsupported image type.', 400, origin);
     }
     /* base64 inflates by ~4/3; this caps the request near 5 MB of pixels. */
-    if (data.length > 7000000) return json({ error: 'Image too large.' }, 413, origin);
-
-    const payload = {
-      model: 'claude-opus-5',
-      max_tokens: 8000,
-      system: SYSTEM,
-      output_config: { effort: 'low' },
-      fallbacks: 'default',
-      tools: [{
-        name: 'report_receipt',
-        description: 'Report the fields read from the receipt image.',
-        strict: true,
-        input_schema: RECEIPT_SCHEMA
-      }],
-      tool_choice: { type: 'tool', name: 'report_receipt' },
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'image', source: { type: 'base64', media_type: mediaType, data } },
-          { type: 'text', text: 'Read this receipt and report its fields.' }
-        ]
-      }]
-    };
-
-    let res;
-    try {
-      res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': env.ANTHROPIC_API_KEY,
-          'anthropic-version': '2023-06-01',
-          'anthropic-beta': 'server-side-fallback-2026-07-01'
-        },
-        body: JSON.stringify(payload)
-      });
-    } catch (e) {
-      return json({ error: 'Could not reach the Claude API.' }, 502, origin);
+    if (data.length > 7000000) {
+      return fail('too_big', 'That photo is too large. Lower Image size in Settings.', 413, origin);
     }
 
-    if (!res.ok) {
-      const detail = (await res.text()).slice(0, 400);
+    let out = await callClaude(env.ANTHROPIC_API_KEY, mediaType, data, false);
+
+    /* The API turned down one of the optional parameters. Try again without
+       them before giving up — a retired parameter should cost quality, not
+       the whole feature. */
+    if (out.kind && out.kind.code === 'bad_request' && looksLikeParamDrift(out.detail)) {
+      out = await callClaude(env.ANTHROPIC_API_KEY, mediaType, data, true);
+    }
+
+    if (out.netError) {
+      return fail('upstream', 'Could not reach the Claude API.', 502, origin);
+    }
+    if (!out.res) {
       /* Surface the status so the phone can say something useful, but never
          echo request headers or the key. */
-      return json({ error: 'Claude API ' + res.status, detail }, res.status === 429 ? 429 : 502, origin);
+      const status = out.kind.code === 'rate_limit' ? 429 : (out.status === 402 ? 402 : 502);
+      return fail(out.kind.code, 'Claude API ' + out.status, status, origin, { detail: out.detail });
     }
 
-    const msg = await res.json();
+    const msg = await out.res.json();
 
     if (msg.stop_reason === 'refusal') {
-      return json({ error: 'The request was declined.' }, 422, origin);
+      return fail('refused', 'Claude declined to read that image.', 422, origin);
     }
 
     const block = (msg.content || []).filter((b) => b.type === 'tool_use' && b.name === 'report_receipt')[0];
-    if (!block) return json({ error: 'No fields came back. Try a clearer photo.' }, 502, origin);
+    if (!block) return fail('no_fields', 'No fields came back. Try a clearer photo.', 502, origin);
 
     return json({
       ok: true,

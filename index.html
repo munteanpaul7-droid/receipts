@@ -192,6 +192,10 @@
       </select>
     </div>
     <button class="btn ghost" id="aiTest">Test the scanner</button>
+    <p class="hint" id="aiState"></p>
+    <div class="chips">
+      <button class="chip hide" id="aiWake">Turn the scanner back on</button>
+    </div>
   </div>
 
   <h3>Folder &amp; taxes</h3>
@@ -226,6 +230,21 @@
       </select>
     </div>
     <button class="btn ghost" id="saveSet">Save settings</button>
+  </div>
+
+  <h3>App</h3>
+  <div class="card">
+    <div class="f">
+      <label for="sVer">Version on this phone</label>
+      <input type="text" id="sVer" readonly>
+    </div>
+    <p class="hint top0">If the app misbehaves after an update, repair it. Your
+    receipts, settings and anything waiting to upload are kept — only the
+    stored copy of the app itself is thrown away and fetched fresh.</p>
+    <div class="row">
+      <button class="btn ghost" id="updBtn">Check for update</button>
+      <button class="btn red" id="fixBtn">Repair app</button>
+    </div>
   </div>
 
   <h3>Data</h3>

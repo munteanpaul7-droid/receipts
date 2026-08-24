@@ -74,9 +74,11 @@ header{
 .prev .x{position:absolute;top:8px;right:8px;width:34px;height:34px;border-radius:50%;background:rgba(0,0,0,.65);border:0;color:#fff;font-size:19px;line-height:1}
 .prev .sz{position:absolute;bottom:8px;left:8px;background:rgba(0,0,0,.65);border-radius:8px;padding:3px 8px;font-size:11px;color:#cfe3ff}
 
-.scan{display:flex;align-items:center;gap:10px;margin:-4px 0 14px;padding:11px 13px;
+.scan{display:flex;align-items:flex-start;gap:10px;margin:-4px 0 14px;padding:11px 13px;
   background:var(--card);border:1px solid var(--line);border-radius:12px;font-size:13px;color:var(--dim)}
-.scan #scanMsg{flex:1;min-width:0}
+.scan #scanMsg{flex:1;min-width:0;line-height:1.45}
+.scan .spin{margin-top:3px}
+.scan #scanBtn{flex:none;align-self:flex-start}
 .scan.good{border-color:#1f6b3a;color:#a7e8bf}
 .scan.bad{border-color:#7a2434;color:#ff9aa8}
 .spin{width:15px;height:15px;flex:none;border-radius:50%;
@@ -124,6 +126,10 @@ header{
 .toast.bad{background:#3a1620;border-color:#7a2434}
 
 .banner{background:#3a2a10;border:1px solid #7a5a1a;border-radius:12px;padding:12px 14px;font-size:13px;margin:14px 0;color:#ffdca8}
+/* The startup-failure banner. Red, because unlike the setup notice it is
+   telling you something is wrong rather than merely unfinished. */
+.banner.bad{background:#3a1218;border-color:#7a2434;color:#ff9aa8}
+.banner.bad .chip{margin-left:6px;vertical-align:middle}
 
 h3{font-size:13px;text-transform:uppercase;letter-spacing:.6px;color:var(--dim);margin:22px 2px 8px}
 .sp{height:6px}
