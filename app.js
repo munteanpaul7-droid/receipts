@@ -92,7 +92,7 @@ const DEFAULTS = {
 /* Bumped whenever app.js, index.html or styles.css change. Shown in Settings
    so "did the update actually land" is a question you can answer from the
    phone, and used by the service worker to name its cache. */
-const APP_VERSION = '2026-08-24.2';
+const APP_VERSION = '2026-08-24.3';
 
 /* ------------------------------------------------------------- utilities */
 
@@ -613,7 +613,7 @@ async function attach(file) {
     $('prevImg').className = 'hide';
     $('prevPdf').className = 'pdf';
     $('prevPdfName').textContent = file.name || 'document.pdf';
-    $('prevPdfMeta').textContent = 'PDF · ' + kb + ' · uploads as-is';
+    $('prevPdfMeta').textContent = 'PDF · ' + kb + ' · uploaded as-is';
     $('prevSz').className = 'sz hide';
   } else {
     prevUrl = URL.createObjectURL(pending.blob);
@@ -624,7 +624,8 @@ async function attach(file) {
   $('prev').className = 'prev';
 
   const mode = readerMode();
-  const canRead = !isPdf && mode !== 'off' && (mode === 'drive' || !!cfg('aiUrl'));
+  const tooBig = isPdf && pending.blob.size > MAX_PDF_BYTES;
+  const canRead = !tooBig && mode !== 'off' && (mode === 'drive' || !!cfg('aiUrl'));
 
   if (!canRead) {
     toast((isPdf ? 'PDF' : 'Photo') + ' attached. Fill in the details.', 'good');
@@ -758,8 +759,8 @@ const SCAN_CAUSES = {
                  fix: 'Fill this one in by hand.' },
   no_fields:   { msg: 'Nothing came back for that photo.',
                  fix: 'Try a straighter, brighter photo — or type it in.' },
-  too_big:     { msg: 'That photo is too large for the scanner.',
-                 fix: 'Lower Image size in Settings and take it again.' }
+  too_big:     { msg: 'That file is too large for the scanner.',
+                 fix: 'Lower Image size in Settings, or type this one in.' }
 };
 
 function explainScanFailure(status, data, netErr) {
@@ -815,7 +816,7 @@ function explainScanFailure(status, data, netErr) {
    trailing guard keeps a tax rate like 9.975 from being read as 9.97, and
    the two alternatives keep 1234.56 from being read as 234.56. num()
    already understands every one of these shapes. */
-const AMOUNT_RE = /(?:\d{1,3}(?:[  ,]\d{3})+|\d+)[.,]\d{2}(?!\d)/g;
+const AMOUNT_RE = /(?:\d{1,3}(?:[  ,]\d{3})+|\d+)[.,]\d{2}(?![\d]|[.,]\d)/g;
 
 function amountsIn(line) {
   const m = String(line).match(AMOUNT_RE);
@@ -976,44 +977,94 @@ function inferGroup(text, sub, fed, prov) {
 /* Turns the OCR text into the same shape the Claude reader returns, so
    everything downstream — applyScan, the form, the history — is unchanged
    whichever reader produced it. */
+/* One scanner over the whole receipt: group 1 is an amount, group 2 a label.
+   Order inside the label list is load-bearing — "sous-total" and "grand
+   total" must be offered before plain "total", or the engine would match the
+   shorter word first and mistake a subtotal for the total. */
+const AMOUNT_SRC = '(?:\\d{1,3}(?:[ \u00a0,]\\d{3})+|\\d+)[.,]\\d{2}(?![\\d]|[.,]\\d)';
+const LABEL_SRC = [
+  'sous[\\s\\-]*total', 'sub[\\s\\-]*total',
+  'monnaie', 'rendu', 'comptant', 'esp[\u00e8e]ces', 'tendered', 'change',
+  'pourboire', 'gratuity', 'tip',
+  'tps', 'gst', 'hst', 'tvh',
+  'tvq', 'qst', 'pst', 'rst', 'tvp',
+  'grand\\s+total', 'total', 'montant',
+  'amount\\s+due', 'balance\\s+due', '[\u00e0a]\\s+payer'
+].join('|');
+const TOKEN_RE = new RegExp('(' + AMOUNT_SRC + ')|\\b(' + LABEL_SRC + ')\\b', 'gi');
+
+/* How far past a label its amount may sit. Wide enough for a till padding a
+   line out to the right margin. A claim also never crosses a line break: the
+   figure belonging to a label is printed beside it, so a label left stranded
+   with nothing of its own — the bare "TPS" beside a registration number,
+   once that number is stripped — comes away empty rather than reaching down
+   the receipt to take the price of a menu item. */
+const LABEL_REACH = 40;
+
+function labelKind(word) {
+  const l = String(word).toLowerCase();
+  if (/sous|sub/.test(l)) return 'subtotal';
+  if (/monnaie|rendu|comptant|esp|tendered|change/.test(l)) return 'skip';
+  if (/pourboire|gratuity|tip/.test(l)) return 'tip';
+  if (/tps|gst|hst|tvh/.test(l)) return 'fed';
+  if (/tvq|qst|pst|rst|tvp/.test(l)) return 'prov';
+  return 'total';
+}
+
 function parseReceiptText(text) {
   const clean = String(text || '').replace(/ /g, ' ');
   const lines = clean.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   if (!lines.length) return null;
 
+  /* Strip registration numbers before anything else looks at the text: they
+     are long digit runs sitting right beside the words TPS and TVQ, and
+     nothing good comes of letting later rules see them. */
+  const body = clean.replace(RX.fedNo, ' ').replace(RX.provNo, ' ');
+
   let subtotal = null, total = null, fedTax = null, provTax = null, tip = null;
-  const totalCandidates = [];
+  const totalCandidates = [], allAmounts = [];
 
-  for (const line of lines) {
-    /* A registration number is digits that look nothing like money, but
-       strip it anyway so no later rule can trip over it. */
-    const l = line.replace(RX.fedNo, ' ').replace(RX.provNo, ' ');
-    const amt = lastAmount(l);
-    if (amt === null) continue;
-
-    if (RX.change.test(l) || RX.cash.test(l)) continue;
-
-    if (RX.subtotal.test(l)) {
-      if (subtotal === null) subtotal = amt;
-      continue;                       /* "SOUS-TOTAL" contains "TOTAL" */
+  /* Walk the receipt as a run of labels and amounts rather than splitting it
+     into lines. A photographed receipt comes back line by line, but Google
+     hands back a PDF with the whole thing run together on one line — and
+     splitting that on newlines gives "SOUS-TOTAL" the last figure on the
+     line instead of the one printed beside it. Reading it as a sequence is
+     true of both: every label claims the next amount that follows it. */
+  let claim = null, claimEnd = 0, m;
+  TOKEN_RE.lastIndex = 0;
+  while ((m = TOKEN_RE.exec(body))) {
+    if (m[1] !== undefined) {
+      const amt = num(m[1]);
+      allAmounts.push(amt);
+      /* A label owns the figure printed next to it, across a gap of padding
+         spaces at most. Without this a label left stranded with no amount of
+         its own — the bare "TPS" beside a registration number, once that
+         number is stripped — would reach down the receipt and claim the
+         price of a menu item. */
+      const gap = body.slice(claimEnd, m.index);
+      if (gap.length > LABEL_REACH || gap.indexOf('\n') >= 0) claim = null;
+      if (claim === 'subtotal') { if (subtotal === null) subtotal = amt; }
+      else if (claim === 'tip') { if (tip === null) tip = amt; }
+      else if (claim === 'fed') { if (fedTax === null) fedTax = amt; }
+      else if (claim === 'prov') { if (provTax === null) provTax = amt; }
+      else if (claim === 'total') totalCandidates.push(amt);
+      /* 'skip' falls through deliberately: change and cash-tendered lines
+         swallow their amount so it can never be taken for the total. */
+      claim = null;
+    } else {
+      claim = labelKind(m[2]);
+      claimEnd = m.index + m[2].length;
     }
-    if (RX.tip.test(l)) { if (tip === null) tip = amt; continue; }
-    if (RX.fed.test(l)) { if (fedTax === null) fedTax = amt; continue; }
-    if (RX.prov.test(l)) { if (provTax === null) provTax = amt; continue; }
-    if (RX.total.test(l)) totalCandidates.push(amt);
   }
 
-  /* Several lines say TOTAL — the amount, the card total, the tendered
+  /* Several places say TOTAL — the amount, the card total, the tendered
      amount. The real one is the largest, since every other total on a
      receipt is a part of it. */
   if (totalCandidates.length) total = Math.max.apply(null, totalCandidates);
 
   /* Nothing said "total" anywhere. The largest amount on the receipt is
      the next best guess, and is usually right. */
-  if (total === null) {
-    const all = lines.reduce((acc, l) => acc.concat(amountsIn(l)), []);
-    if (all.length) total = Math.max.apply(null, all);
-  }
+  if (total === null && allAmounts.length) total = Math.max.apply(null, allAmounts);
   if (!total || total <= 0) return null;
 
   if (subtotal === null && fedTax !== null) {
@@ -1060,7 +1111,7 @@ function parseReceiptText(text) {
    what runs the OCR, and it is free. The temp document is deleted the
    moment its text has been read — including when reading it fails, so a
    stray file never accumulates in your receipts folder. */
-async function ocrViaDrive(blob) {
+async function ocrViaDrive(blob, isPdf) {
   await ensureToken();
   const rootId = await rootFolderId();
 
@@ -1071,7 +1122,10 @@ async function ocrViaDrive(blob) {
   };
   const form = new FormData();
   form.append('metadata', new Blob([JSON.stringify(meta)], { type: 'application/json' }));
-  form.append('file', blob, 'receipt.jpg');
+  /* Drive decides how to convert from the part's own type, so a PDF has to
+     arrive named and typed as one — it OCRs those exactly as it does an
+     image. */
+  form.append('file', blob, isPdf ? 'receipt.pdf' : 'receipt.jpg');
 
   const up = await fetch(
     'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',
@@ -1100,6 +1154,12 @@ async function ocrViaDrive(blob) {
     } catch (e) { /* the temp doc can be tidied later; the receipt matters more */ }
   }
 }
+
+/* A PDF is a perfectly good receipt — emailed ones nearly always are. Google
+   OCRs a PDF on conversion just as it does an image, and Claude takes one as
+   a document, so both readers handle them. The size guard exists because a
+   PDF is never shrunk on the way in the way a photo is. */
+const MAX_PDF_BYTES = 4.5 * 1024 * 1024;
 
 /* Which reader is in use. Someone who had already set up the Claude Worker
    keeps it; everybody else gets the free one, which needs no setting up. */
@@ -1168,7 +1228,7 @@ async function tryReadDrive() {
   }
   let text;
   try {
-    text = await withDeadline(ocrViaDrive(pending.blob), SCAN_TIMEOUT_MS);
+    text = await withDeadline(ocrViaDrive(pending.blob, pending.ext === 'pdf'), SCAN_TIMEOUT_MS);
   } catch (e) {
     return { fail: explainDriveFailure(e) };
   }
@@ -1252,7 +1312,11 @@ async function tryScan(url) {
     res = await fetchWithTimeout(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image, mediaType: pending.blob.type || 'image/jpeg' })
+      body: JSON.stringify({
+        image,
+        mediaType: pending.ext === 'pdf' ? 'application/pdf'
+                                         : (pending.blob.type || 'image/jpeg')
+      })
     }, SCAN_TIMEOUT_MS);
   } catch (e) {
     return { fail: explainScanFailure(0, null, true) };
@@ -1263,8 +1327,13 @@ async function tryScan(url) {
 }
 
 async function scanReceipt(manual) {
-  if (!pending || pending.ext === 'pdf') {
-    if (manual) toast('Attach a photo first.', 'bad');
+  if (!pending) {
+    if (manual) toast('Attach a photo or PDF first.', 'bad');
+    return;
+  }
+  const isPdf = pending.ext === 'pdf';
+  if (isPdf && pending.blob.size > MAX_PDF_BYTES) {
+    setScan('bad', 'That PDF is too big to read. It still uploads with the receipt — type the details in.');
     return;
   }
 
@@ -1280,8 +1349,9 @@ async function scanReceipt(manual) {
   }
 
   const attempt = () => (mode === 'drive' ? tryReadDrive() : tryScan(url));
-  setScan('busy', mode === 'drive' ? 'Reading receipt with Google Drive…'
-                                   : 'Reading receipt…');
+  const what = isPdf ? 'PDF' : 'receipt';
+  setScan('busy', mode === 'drive' ? 'Reading ' + what + ' with Google Drive…'
+                                   : 'Reading ' + what + '…');
 
   /* A rate limit or a hiccup upstream is worth exactly one more try. A
      missing key or a deleted Worker will not fix itself in 1.5 seconds. */

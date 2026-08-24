@@ -131,6 +131,45 @@ console.log('\n== an unreadable receipt says so instead of inventing ==');
   ok('province left blank rather than guessed', r2.tax_group === '', r2.tax_group);
 }
 
+console.log('\n== a PDF, which Google returns run together on one line ==');
+{
+  /* Verbatim from a real Drive conversion of a PDF receipt: no newlines at
+     all. Splitting on lines gave SOUS-TOTAL the last figure on the line and
+     lost the tax entirely, which is what the token walk exists to fix. */
+  const r = parseReceiptText('SOUS-TOTAL 24.00 TPS 1.20 TVQ 2.39 TOTAL 27.59 ');
+  ok('subtotal', r.subtotal === 24.00, r.subtotal);
+  ok('TPS', r.federal_tax === 1.20, r.federal_tax);
+  ok('TVQ', r.provincial_tax === 2.39, r.provincial_tax);
+  ok('total', r.total === 27.59, r.total);
+  ok('province QC', r.tax_group === 'QC', r.tax_group);
+  ok('confident, because the maths closes', r.confidence === 'high', r.confidence);
+}
+
+console.log('\n== a stranded label cannot reach down the receipt ==');
+{
+  /* The registration number is stripped, leaving a bare TPS and TVQ with no
+     amount of their own. Neither may claim the price of a menu item. */
+  const r = parseReceiptText([
+    'CHEZ ASHTON',
+    'TPS 123456789 RT0001',
+    'TVQ 1234567890 TQ0001',
+    '2 Poutine italienne      21.00',
+    'SOUS-TOTAL               24.00',
+    'TPS                       1.20',
+    'TVQ                       2.39',
+    'TOTAL                    27.59'
+  ].join('\n'));
+  ok('TPS is the tax, not the poutine', r.federal_tax === 1.20, r.federal_tax);
+  ok('TVQ is the tax, not the poutine', r.provincial_tax === 2.39, r.provincial_tax);
+  ok('registration numbers still read', r.federal_tax_number === '123456789 RT0001', r.federal_tax_number);
+}
+
+console.log('\n== a dotted date is not money ==');
+{
+  ok('23.08.2026 is not $23.08', amountsIn('Date 23.08.2026').length === 0, amountsIn('Date 23.08.2026'));
+  ok('but 23.08 alone still is', amountsIn('TOTAL 23.08')[0] === 23.08, amountsIn('TOTAL 23.08'));
+}
+
 console.log('\n== dates ==');
 ok('ISO', findDate('Date: ' + recent(2)) === recent(2));
 ok('day-first numeric', findDate(dmy(4)) === recent(4), findDate(dmy(4)));

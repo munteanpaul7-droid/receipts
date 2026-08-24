@@ -163,6 +163,33 @@ const ok = (n, c, x) => { if (c) { pass++; console.log('  ok   ' + n); } else { 
   ok('temp Drive doc was deleted', await page.evaluate(() => window.__deleted));
   await page.screenshot({ path: '/tmp/receipts-shot-drive-filled.png' });
 
+  console.log('\n== an emailed PDF receipt is read the same way ==');
+  await page.evaluate(() => {
+    /* Verbatim shape of a real Drive PDF conversion: one line, no breaks. */
+    const TEXT = 'SOUS-TOTAL 24.00 TPS 1.20 TVQ 2.39 TOTAL 27.59 ';
+    window.__pdfDeleted = false;
+    const real = window.fetch;
+    window.fetch = (u, o) => {
+      const url = String(u), method = (o && o.method) || 'GET';
+      if (url.includes('/upload/drive/v3/files')) return Promise.resolve(new Response(JSON.stringify({ id: 'tmp2' }), { status: 200 }));
+      if (url.includes('/drive/v3/files/root-id')) return Promise.resolve(new Response(JSON.stringify({ id: 'root-id' }), { status: 200 }));
+      if (url.includes('/export')) return Promise.resolve(new Response(TEXT, { status: 200 }));
+      if (method === 'DELETE') { window.__pdfDeleted = true; return Promise.resolve(new Response('{}', { status: 200 })); }
+      return real(u, o);
+    };
+  });
+  await page.click('#prevX');
+  await page.evaluate(() => { ['fTotal','fTps','fTvq','fName'].forEach(id => document.getElementById(id).value = ''); });
+  await page.setInputFiles('#libIn', '/tmp/receipts-test.pdf');
+  await page.waitForTimeout(2500);
+  ok('the PDF preview card is shown', await page.isVisible('#prevPdf'));
+  ok('total read from the PDF', (await page.inputValue('#fTotal')) === '27.59', await page.inputValue('#fTotal'));
+  ok('TPS read from the PDF', (await page.inputValue('#fTps')) === '1.20', await page.inputValue('#fTps'));
+  ok('TVQ read from the PDF', (await page.inputValue('#fTvq')) === '2.39', await page.inputValue('#fTvq'));
+  ok('row went green', (await page.getAttribute('#scanRow', 'class')).includes('good'), await page.getAttribute('#scanRow', 'class'));
+  ok('temp doc deleted', await page.evaluate(() => window.__pdfDeleted));
+  await page.screenshot({ path: '/tmp/receipts-shot-pdf.png' });
+
   console.log('\n== the service worker registers and serves the shell ==');
   const sw = await page.evaluate(async () => {
     const r = await navigator.serviceWorker.getRegistration();

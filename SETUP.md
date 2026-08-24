@@ -135,10 +135,14 @@ the total, it says so; when it doesn't, it tells you to look. **Anything it
 cannot read with confidence is left blank rather than guessed at**, and nothing
 it fills in ever overwrites something you typed yourself.
 
+**PDFs are read too**, which is how emailed receipts usually arrive — pick one
+with **From photos**. Those are often cleaner than a photograph, because the
+text is already text rather than something to be recognised.
+
 It is not magic. A crumpled, faded or badly-lit receipt will come back with gaps,
 and 15% HST provinces (New Brunswick, Newfoundland, PEI) can't be told apart from
-their tax alone, so the province is left on your default. Check the boxes before
-saving.
+their tax alone, so the province is left on your default. A PDF holding several
+receipts at once will only give you the first. Check the boxes before saving.
 
 If you want the best possible reading, switch to **Claude** — that needs an
 Anthropic account with credit, roughly a dollar or two a month at a hundred

@@ -105,6 +105,29 @@ console.log('\n== the happy path is unchanged ==');
   ok('a refusal is its own code', (await (await worker.fetch(post(IMG), { ANTHROPIC_API_KEY: 'k' })).json()).code === 'refused');
 }
 
+console.log('\n== a PDF receipt goes to Claude as a document, not an image ==');
+{
+  stub([CLAUDE_OK]);
+  const res = await worker.fetch(post({ image: 'QUJD', mediaType: 'application/pdf' }), { ANTHROPIC_API_KEY: 'k' });
+  ok('accepted', res.status === 200, String(res.status));
+  const block = sent[0].body.messages[0].content[0];
+  ok('sent as a document block', block.type === 'document', block.type);
+  ok('with the pdf media type', block.source.media_type === 'application/pdf', block.source.media_type);
+  ok('the document comes before the text', sent[0].body.messages[0].content[1].type === 'text');
+
+  stub([CLAUDE_OK]);
+  await worker.fetch(post(IMG), { ANTHROPIC_API_KEY: 'k' });
+  ok('a photo is still an image block', sent[0].body.messages[0].content[0].type === 'image');
+
+  stub([CLAUDE_OK]);
+  const bad = await worker.fetch(post({ image: 'QUJD', mediaType: 'application/zip' }), { ANTHROPIC_API_KEY: 'k' });
+  ok('an unsupported type is still refused', bad.status === 400, String(bad.status));
+  ok('and nothing was sent upstream', sent.length === 0, String(sent.length));
+
+  const health = await (await worker.fetch(new Request('https://w.dev/', { headers: { Origin: ORIGIN } }), {})).json();
+  ok('health advertises what it accepts', health.accepts.includes('application/pdf'), health.accepts);
+}
+
 console.log('\n== CORS still lets the phone in ==');
 {
   const pre = await worker.fetch(new Request('https://w.dev/', { method: 'OPTIONS', headers: { Origin: ORIGIN } }), {});

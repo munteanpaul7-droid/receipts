@@ -121,6 +121,30 @@ console.log('\n== Claude selected but no URL is a calm state too ==');
   ok('points at the form', /always works/.test(c._els.scanMsg.textContent), c._els.scanMsg.textContent);
 }
 
+console.log('\n== PDFs are read now, and the Claude path sends the right type ==');
+{
+  const c = scanEnv([GOOD]);
+  c._ls.setItem('rc_cfg_reader', JSON.stringify('ai'));
+  c.sentBody = null;
+  const inner = c.fetch;
+  c.fetch = (u, o) => { c.sentBody = JSON.parse(o.body); return inner(u, o); };
+  vm.runInContext('pending = { blob: { type: "application/pdf", size: 5000 }, ext: "pdf" }', c);
+  await c.scanReceipt(true);
+  ok('a PDF is no longer skipped', c.calls === 1, String(c.calls));
+  ok('declared as a PDF to the Worker', c.sentBody.mediaType === 'application/pdf', c.sentBody && c.sentBody.mediaType);
+  ok('the form got filled', c._els.fTotal.value === '114.98', c._els.fTotal.value);
+}
+
+console.log('\n== an oversize PDF is refused kindly, without a network call ==');
+{
+  const c = scanEnv([GOOD]);
+  vm.runInContext('pending = { blob: { type: "application/pdf", size: 9 * 1024 * 1024 }, ext: "pdf" }', c);
+  await c.scanReceipt(true);
+  ok('nothing was uploaded', c.calls === 0, String(c.calls));
+  ok('says it still reaches Drive', /still uploads/i.test(c._els.scanMsg.textContent), c._els.scanMsg.textContent);
+  ok('and tells you to type it in', /type the details in/i.test(c._els.scanMsg.textContent), c._els.scanMsg.textContent);
+}
+
 console.log('\n' + (fail ? 'FAILED ' + fail : 'all ' + pass + ' passed'));
 process.exit(fail ? 1 : 0);
 })();

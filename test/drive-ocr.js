@@ -22,13 +22,15 @@ function driveEnv(opts) {
   c._ls.setItem('rc_granted', JSON.stringify(true));
   c._ls.setItem('rc_rootId', JSON.stringify('root-folder-id'));
   c.calls = [];
-  c.FormData = function () { this._p = []; };
-  c.FormData.prototype.append = function (k, v) { this._p.push(k); };
+  c.FormData = function () { this._p = []; this._names = []; };
+  c.FormData.prototype.append = function (k, v, name) { this._p.push(k); if (name) this._names.push(name); };
+  c._lastForm = null;
   c.Blob = function () {};
   c.fetch = (url, o) => {
     const method = (o && o.method) || 'GET';
     c.calls.push(method + ' ' + String(url).split('?')[0]);
     if (String(url).includes('/upload/drive/v3/files')) {
+      c._lastForm = o && o.body;
       if (opts.uploadStatus && opts.uploadStatus !== 200) {
         return Promise.resolve({ ok: false, status: opts.uploadStatus, json: () => Promise.resolve({}) });
       }
@@ -134,6 +136,24 @@ console.log('\n== a hang is stopped by the deadline, not left spinning ==');
   ok('a timeout is explained', /took too long/i.test(info.msg), info);
   ok('and is worth retrying', info.transient === true, info);
   ok('and says what to do', /try again|type it in/i.test(info.fix), info.fix);
+}
+
+console.log('\n== an emailed PDF receipt is read too ==');
+{
+  const c = driveEnv();
+  vm.runInContext('pending = { blob: { type: "application/pdf", size: 5000 }, ext: "pdf" }', c);
+  const out = await c.tryReadDrive();
+  ok('the PDF is read, not skipped', !out.fail && out.fields.total === 27.59, out.fail || out.fields);
+  ok('sent to Drive named as a PDF', c._lastForm && c._lastForm._names.indexOf('receipt.pdf') >= 0,
+     c._lastForm && c._lastForm._names);
+}
+
+console.log('\n== a photo is still sent as a photo ==');
+{
+  const c = driveEnv();
+  await c.tryReadDrive();
+  ok('named as a jpg', c._lastForm && c._lastForm._names.indexOf('receipt.jpg') >= 0,
+     c._lastForm && c._lastForm._names);
 }
 
 console.log('\n== offline is not treated as a broken scanner ==');

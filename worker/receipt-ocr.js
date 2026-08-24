@@ -23,6 +23,9 @@ const ALLOWED_ORIGINS = [
 
 const MODEL = 'claude-opus-5';
 
+/* Photos from the camera, and the PDFs that emailed receipts arrive as. */
+const ACCEPTED = ['image/jpeg','image/png','image/webp','image/gif','application/pdf'];
+
 /* Kept in step with TAX_GROUPS and CATEGORIES in app.js. */
 const TAX_CODES = ['QC','ON','AB','BC','MB','NB','NL','NS','NT','NU','PE','SK','YT',''];
 const CATEGORIES = [
@@ -58,7 +61,10 @@ const RECEIPT_SCHEMA = {
 };
 
 const SYSTEM = [
-  'You read photographs of retail receipts and return their fields.',
+  'You read retail receipts and return their fields. Most arrive as a',
+  'photograph; some are a PDF, which is usually an emailed or printed receipt',
+  'and cleaner to read. A PDF holding several receipts is unusual — if you get',
+  'one, report the first and say so in note.',
   '',
   'Rules:',
   '- Report only what is printed. Never invent a value to fill a field; use null.',
@@ -134,6 +140,16 @@ function looksLikeParamDrift(detail) {
          d.indexOf('thinking') >= 0 || d.indexOf('strict') >= 0;
 }
 
+/* A photo arrives as an image block, an emailed receipt as a document one.
+   Claude reads a PDF natively — no conversion or OCR step in between — so
+   the only difference is which block the bytes are wrapped in. */
+function sourceBlock(mediaType, data) {
+  if (mediaType === 'application/pdf') {
+    return { type: 'document', source: { type: 'base64', media_type: mediaType, data } };
+  }
+  return { type: 'image', source: { type: 'base64', media_type: mediaType, data } };
+}
+
 function buildPayload(mediaType, data, plain) {
   const payload = {
     model: MODEL,
@@ -149,7 +165,8 @@ function buildPayload(mediaType, data, plain) {
     messages: [{
       role: 'user',
       content: [
-        { type: 'image', source: { type: 'base64', media_type: mediaType, data } },
+        /* The document or image goes first; Claude reads it better that way. */
+        sourceBlock(mediaType, data),
         { type: 'text', text: 'Read this receipt and report its fields.' }
       ]
     }]
@@ -221,6 +238,7 @@ export default {
         service: 'receipt-ocr',
         version: VERSION,
         model: MODEL,
+        accepts: ACCEPTED,
         keyConfigured: !!env.ANTHROPIC_API_KEY
       }, 200, origin);
     }
@@ -242,12 +260,16 @@ export default {
     const data = body && body.image;
     const mediaType = (body && body.mediaType) || 'image/jpeg';
     if (!data || typeof data !== 'string') return fail('bad_body', 'Missing image.', 400, origin);
-    if (['image/jpeg','image/png','image/webp','image/gif'].indexOf(mediaType) < 0) {
-      return fail('bad_body', 'Unsupported image type.', 400, origin);
+    if (ACCEPTED.indexOf(mediaType) < 0) {
+      return fail('bad_body', 'Unsupported file type.', 400, origin);
     }
     /* base64 inflates by ~4/3; this caps the request near 5 MB of pixels. */
     if (data.length > 7000000) {
-      return fail('too_big', 'That photo is too large. Lower Image size in Settings.', 413, origin);
+      return fail('too_big',
+        mediaType === 'application/pdf'
+          ? 'That PDF is too large to read.'
+          : 'That photo is too large. Lower Image size in Settings.',
+        413, origin);
     }
 
     let out = await callClaude(env.ANTHROPIC_API_KEY, mediaType, data, false);
