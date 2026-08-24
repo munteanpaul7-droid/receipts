@@ -48,8 +48,27 @@ is no client secret in this flow.
 
 - **Scan with camera** opens the camera. **From photos** takes an existing
   picture or a PDF.
-- Enter the total, then tap **Auto-calculate taxes from total** — it splits out
-  TPS (5%) and TVQ (9.975%). Both stay editable; **No tax** zeroes them.
+- Pick the **tax group** for where you bought it. It defaults to Quebec and
+  remembers whichever you used last, so day to day you never touch it — but buy
+  gas in Ontario and one tap switches the receipt to HST.
+- Enter the total, then tap **Auto-calculate taxes from total** — it splits the
+  tax at that province's rates. The fields rename themselves to match (TPS/TVQ
+  in Quebec, HST in Ontario, GST/PST in BC), and provinces with a single
+  combined tax show a single field. Everything stays editable; **No tax**
+  zeroes it.
+
+| Group | Rates | | Group | Rates |
+|---|---|---|---|---|
+| Quebec | TPS 5% + TVQ 9.975% | | Nova Scotia | HST 14% |
+| Ontario | HST 13% | | New Brunswick | HST 15% |
+| British Columbia | GST 5% + PST 7% | | Newfoundland and Labrador | HST 15% |
+| Manitoba | GST 5% + RST 7% | | Prince Edward Island | HST 15% |
+| Saskatchewan | GST 5% + PST 6% | | Alberta | GST 5% |
+| Yukon, NWT, Nunavut | GST 5% | | Custom | your own two rates |
+
+Rates are correct to May 2026 — note Nova Scotia dropped from 15% to 14% in
+April 2025. If a rate ever changes, either edit `TAX_GROUPS` at the top of
+`app.js` or switch that receipt to **Custom** and set the rates in Settings.
 - Categories: Restaurant, Gas / Fuel, Groceries / Food, Furniture, Office
   supplies, Travel / Hotel, Vehicle / Maintenance, Utilities / Telecom,
   Professional services, Software / Subscriptions, Tools / Equipment,
@@ -70,8 +89,11 @@ receipts/
 ```
 
 Open `receipts-index.csv` in Google Sheets and you have date, merchant,
-category, purpose, subtotal, TPS, TVQ, total, both registration numbers, the
-file name and a direct link. Each picture also carries the same details in its
+category, purpose, tax group, subtotal, federal tax, provincial tax, total,
+both registration numbers, the file name and a direct link. The tax columns are
+named generically because their meaning shifts by province — federal holds GST,
+HST or TPS, provincial holds PST, RST, QST or TVQ — and the **Tax group**
+column (QC, ON, BC…) tells you which. Filter on it to total a single province. Each picture also carries the same details in its
 Drive *description*, so searching Drive by merchant or amount finds it.
 
 A manual entry with no photo is saved as a small `.txt` in the same folder, so
@@ -97,7 +119,8 @@ just queues; open Settings and tap **Connect Drive** to flush the queue.
 - It creates the `receipts` folder itself on first save and remembers it. You
   can drag that folder anywhere in Drive afterwards, or rename it, and the app
   keeps writing to the same one.
-- Folder name, tax rates, photo size and the year/month layout are all in
+- Folder name, default tax group, custom rates, photo size and the year/month
+  layout are all in
   **Settings**.
 - Nothing passes through anyone else's server. The only two parties are your
   phone and Google.

@@ -23,12 +23,52 @@ const CATEGORIES = [
   'Other'
 ];
 
+/* Canadian sales tax by province. Every one of these is charged on the
+   pre-tax subtotal — none of them compound on each other, including QST,
+   which stopped stacking on GST back in 2013 — so one formula covers the
+   country: total = subtotal x (1 + r1 + r2).
+   HST provinces have a single combined tax, so they leave r2 at zero and
+   the second field hides itself.
+   Rates verified to May 2026. Nova Scotia dropped 15 -> 14 in April 2025;
+   if any rate moves, edit it here or use the Custom group.              */
+const TAX_GROUPS = [
+  { code: 'QC', name: 'Quebec — TPS 5% + TVQ 9.975%',        t1: 'TPS', r1: 5,  t2: 'TVQ', r2: 9.975 },
+  { code: 'ON', name: 'Ontario — HST 13%',                   t1: 'HST', r1: 13, t2: '',    r2: 0 },
+  { code: 'AB', name: 'Alberta — GST 5%',                    t1: 'GST', r1: 5,  t2: '',    r2: 0 },
+  { code: 'BC', name: 'British Columbia — GST 5% + PST 7%',  t1: 'GST', r1: 5,  t2: 'PST', r2: 7 },
+  { code: 'MB', name: 'Manitoba — GST 5% + RST 7%',          t1: 'GST', r1: 5,  t2: 'RST', r2: 7 },
+  { code: 'NB', name: 'New Brunswick — HST 15%',             t1: 'HST', r1: 15, t2: '',    r2: 0 },
+  { code: 'NL', name: 'Newfoundland and Labrador — HST 15%', t1: 'HST', r1: 15, t2: '',    r2: 0 },
+  { code: 'NS', name: 'Nova Scotia — HST 14%',               t1: 'HST', r1: 14, t2: '',    r2: 0 },
+  { code: 'NT', name: 'Northwest Territories — GST 5%',      t1: 'GST', r1: 5,  t2: '',    r2: 0 },
+  { code: 'NU', name: 'Nunavut — GST 5%',                    t1: 'GST', r1: 5,  t2: '',    r2: 0 },
+  { code: 'PE', name: 'Prince Edward Island — HST 15%',      t1: 'HST', r1: 15, t2: '',    r2: 0 },
+  { code: 'SK', name: 'Saskatchewan — GST 5% + PST 6%',      t1: 'GST', r1: 5,  t2: 'PST', r2: 6 },
+  { code: 'YT', name: 'Yukon — GST 5%',                      t1: 'GST', r1: 5,  t2: '',    r2: 0 },
+  { code: 'XX', name: 'Custom rates (set in Settings)',      t1: 'Tax 1', r1: null, t2: 'Tax 2', r2: null }
+];
+
+function taxGroup(code) {
+  return TAX_GROUPS.filter((g) => g.code === code)[0] || TAX_GROUPS[0];
+}
+
+/* Custom borrows its rates and keeps generic labels; everything else is
+   fixed by statute. */
+function taxRates(code) {
+  const g = taxGroup(code);
+  if (g.code === 'XX') return { t1: g.t1, r1: num(cfg('tpsRate')), t2: g.t2, r2: num(cfg('tvqRate')) };
+  return { t1: g.t1, r1: g.r1, t2: g.t2, r2: g.r2 };
+}
+
 const MONTHS = ['January','February','March','April','May','June',
                 'July','August','September','October','November','December'];
 
 const CSV_NAME = 'receipts-index.csv';
-const CSV_HEADER = ['Date','Merchant','Category','Purpose','Subtotal','TPS','TVQ',
-                    'Total','TPS number','TVQ number','File','Drive link','Saved at'];
+/* Keep every header comma-free — appendToIndex splits the stored header on
+   commas to spot an out-of-date layout. */
+const CSV_HEADER = ['Date','Merchant','Category','Purpose','Tax group','Subtotal',
+                    'Federal tax (GST/HST/TPS)','Provincial tax (PST/QST/TVQ)','Total',
+                    'Federal tax no.','Provincial tax no.','File','Drive link','Saved at'];
 
 /* This app's OAuth client, created under munteanpaul7@gmail.com. A web client
    ID is public by design — it travels in the URL of every sign-in — and there
@@ -38,6 +78,7 @@ const DEFAULTS = {
   clientId: '74591076439-0hkmtsuqouhn0av8qeeov1u248vtesh5.apps.googleusercontent.com',
   root: 'receipts',
   struct: 'ym',
+  taxGroup: 'QC',
   tpsRate: '5',
   tvqRate: '9.975',
   maxPx: '1600'
@@ -294,13 +335,32 @@ function csvCell(v) {
 }
 function csvRow(arr) { return arr.map(csvCell).join(',') + '\r\n'; }
 
+async function renameFile(id, name) {
+  return driveJSON('/files/' + id + '?fields=id', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name })
+  });
+}
+
 async function appendToIndex(rootId, row) {
   let id = await findChild(CSV_NAME, rootId, false);
   let body;
   if (id) {
     const cur = await (await drive('/files/' + id + '?alt=media')).text();
-    body = (cur.endsWith('\n') || cur === '' ? cur : cur + '\r\n') + csvRow(row);
-  } else {
+    /* An index written by an older build has fewer columns. Appending to it
+       would silently shift every value one cell left, so retire it under a
+       new name and start a clean one instead. */
+    const head = (cur.split(/\r?\n/)[0] || '').replace(/^﻿/, '');
+    const cols = head ? head.split(',').length : 0;
+    if (cols && cols !== CSV_HEADER.length) {
+      await renameFile(id, 'receipts-index (older layout).csv');
+      id = null;
+    } else {
+      body = (cur.endsWith('\n') || cur === '' ? cur : cur + '\r\n') + csvRow(row);
+    }
+  }
+  if (!id) {
     body = '﻿' + csvRow(CSV_HEADER) + csvRow(row);
     const created = await uploadFile(new Blob([body], { type: 'text/csv' }), CSV_NAME, rootId);
     return created.id;
@@ -434,6 +494,31 @@ function paintMerchants() {
   $('merchants').innerHTML = Object.keys(v).map((k) => '<option value="' + (v[k].label || k).replace(/"/g, '') + '">').join('');
 }
 
+/* Relabels the tax fields for the chosen province and folds away the second
+   one in HST and GST-only places, where a second tax does not exist. */
+function applyTaxGroup(code, clearAmounts) {
+  const rt = taxRates(code);
+  const single = !rt.t2;
+
+  $('lblT1').textContent = rt.t1 + ' ($)';
+  $('lblT1No').textContent = rt.t1 + ' number';
+  $('wrapT2').className = single ? 'hide' : '';
+  $('wrapT2No').className = single ? 'f hide' : 'f';
+  if (!single) {
+    $('lblT2').textContent = rt.t2 + ' ($)';
+    $('lblT2No').textContent = rt.t2 + ' number';
+  }
+  $('chkLbl').textContent = single
+    ? 'Subtotal + ' + rt.t1
+    : 'Subtotal + ' + rt.t1 + ' + ' + rt.t2;
+
+  /* A hidden second field must not keep a stale amount, or it would quietly
+     ride along into the total check and the spreadsheet. */
+  if (single) $('fTvq').value = '0.00';
+  if (clearAmounts) { $('fTps').value = ''; if (!single) $('fTvq').value = ''; }
+  updateSums();
+}
+
 function updateSums() {
   const total = num($('fTotal').value), tps = num($('fTps').value), tvq = num($('fTvq').value);
   const sub = total - tps - tvq;
@@ -502,6 +587,7 @@ function collect() {
     name,
     cat: $('fCat').value,
     purpose: $('fPurpose').value.trim(),
+    tax: $('fTax').value,
     total,
     tps: num($('fTps').value),
     tvq: num($('fTvq').value),
@@ -514,7 +600,7 @@ function rememberVendor(m) {
   if (!m.name) return;
   const v = S.get('vendors', {});
   const key = m.name.toLowerCase();
-  v[key] = { label: m.name, tpsNo: m.tpsNo, tvqNo: m.tvqNo, cat: m.cat };
+  v[key] = { label: m.name, tpsNo: m.tpsNo, tvqNo: m.tvqNo, cat: m.cat, tax: m.tax };
   S.set('vendors', v);
   paintMerchants();
 }
@@ -527,15 +613,21 @@ async function uploadJob(job) {
   const m = job.meta;
   const sub = m.total - m.tps - m.tvq;
 
+  const g = taxGroup(m.tax || 'QC');
+  const rt = taxRates(m.tax || 'QC');
+
   const base = m.date + ' ' + safeName(m.cat.split(' ')[0]) + ' ' + safeName(m.name) + ' ' + fixed(m.total);
   const desc =
     'Merchant: ' + m.name + '\nDate: ' + m.date + '\nCategory: ' + m.cat +
-    '\nPurpose: ' + m.purpose + '\nSubtotal: ' + fixed(sub) +
-    '\nTPS: ' + fixed(m.tps) + '\nTVQ: ' + fixed(m.tvq) + '\nTotal: ' + fixed(m.total) +
-    (m.tpsNo ? '\nTPS number: ' + m.tpsNo : '') +
-    (m.tvqNo ? '\nTVQ number: ' + m.tvqNo : '');
+    '\nPurpose: ' + m.purpose + '\nTax group: ' + g.name + ' (' + g.code + ')' +
+    '\nSubtotal: ' + fixed(sub) +
+    '\n' + rt.t1 + ': ' + fixed(m.tps) +
+    (rt.t2 ? '\n' + rt.t2 + ': ' + fixed(m.tvq) : '') +
+    '\nTotal: ' + fixed(m.total) +
+    (m.tpsNo ? '\n' + rt.t1 + ' number: ' + m.tpsNo : '') +
+    (m.tvqNo && rt.t2 ? '\n' + rt.t2 + ' number: ' + m.tvqNo : '');
   const props = {
-    date: m.date, merchant: m.name.slice(0, 100), category: m.cat,
+    date: m.date, merchant: m.name.slice(0, 100), category: m.cat, taxGroup: g.code,
     total: fixed(m.total), tps: fixed(m.tps), tvq: fixed(m.tvq)
   };
 
@@ -551,7 +643,7 @@ async function uploadJob(job) {
   }
 
   await appendToIndex(rootId, [
-    m.date, m.name, m.cat, m.purpose, fixed(sub), fixed(m.tps), fixed(m.tvq),
+    m.date, m.name, m.cat, m.purpose, g.code, fixed(sub), fixed(m.tps), fixed(m.tvq),
     fixed(m.total), m.tpsNo, m.tvqNo, fileName, link, new Date().toISOString()
   ]);
 
@@ -598,7 +690,7 @@ async function save() {
   const job = { id, meta: m, blob: pending ? pending.blob : null, ext: pending ? pending.ext : null };
 
   pushHistory({
-    id, date: m.date, name: m.name, cat: m.cat, purpose: m.purpose,
+    id, date: m.date, name: m.name, cat: m.cat, purpose: m.purpose, tax: m.tax,
     total: m.total, tps: m.tps, tvq: m.tvq, tpsNo: m.tpsNo, tvqNo: m.tvqNo,
     thumb: pending ? pending.thumb : '', status: 'pending', link: ''
   });
@@ -648,6 +740,13 @@ function boot() {
   $('fDate').value = todayISO();
   $('fCat').value = S.get('lastCat', 'Restaurant');
 
+  const taxOpts = TAX_GROUPS.map((g) => '<option value="' + g.code + '">' + g.name + '</option>').join('');
+  $('fTax').innerHTML = taxOpts;
+  $('sTaxDefault').innerHTML = taxOpts;
+  $('sTaxDefault').value = cfg('taxGroup');
+  $('fTax').value = S.get('lastTax', cfg('taxGroup'));
+  applyTaxGroup($('fTax').value, false);
+
   $('sCid').value = cfg('clientId');
   $('sRoot').value = cfg('root');
   $('sStruct').value = cfg('struct');
@@ -669,14 +768,19 @@ function boot() {
 
   ['fTotal', 'fTps', 'fTvq'].forEach((k) => $(k).addEventListener('input', updateSums));
   $('fCat').addEventListener('change', () => S.set('lastCat', $('fCat').value));
+  $('fTax').addEventListener('change', () => {
+    S.set('lastTax', $('fTax').value);
+    applyTaxGroup($('fTax').value, true);
+  });
 
   $('calcBtn').addEventListener('click', () => {
     const total = num($('fTotal').value);
     if (!(total > 0)) { toast('Enter the total first.', 'bad'); return; }
-    const r1 = num(cfg('tpsRate')) / 100, r2 = num(cfg('tvqRate')) / 100;
+    const rt = taxRates($('fTax').value);
+    const r1 = rt.r1 / 100, r2 = rt.r2 / 100;
     const sub = total / (1 + r1 + r2);
     $('fTps').value = fixed(sub * r1);
-    $('fTvq').value = fixed(sub * r2);
+    $('fTvq').value = rt.t2 ? fixed(sub * r2) : '0.00';
     updateSums();
   });
   $('zeroBtn').addEventListener('click', () => {
@@ -686,6 +790,10 @@ function boot() {
   $('fName').addEventListener('change', () => {
     const v = S.get('vendors', {})[$('fName').value.trim().toLowerCase()];
     if (!v) return;
+    if (v.tax && v.tax !== $('fTax').value) {
+      $('fTax').value = v.tax;
+      applyTaxGroup(v.tax, false);
+    }
     if (!$('fTpsNo').value) $('fTpsNo').value = v.tpsNo || '';
     if (!$('fTvqNo').value) $('fTvqNo').value = v.tvqNo || '';
     if (v.cat) $('fCat').value = v.cat;
@@ -723,17 +831,20 @@ function boot() {
     setCfg('clientId', $('sCid').value.trim());
     setCfg('root', $('sRoot').value.trim() || 'receipts');
     setCfg('struct', $('sStruct').value);
+    setCfg('taxGroup', $('sTaxDefault').value);
     setCfg('tpsRate', $('sTps').value.trim() || '5');
     setCfg('tvqRate', $('sTvq').value.trim() || '9.975');
     setCfg('maxPx', $('sQual').value);
     if (prevRoot !== cfg('root')) S.del('rootId');
+    applyTaxGroup($('fTax').value, false);
     paintStatus();
     toast('Settings saved.', 'good');
   });
 
   $('csvBtn').addEventListener('click', () => {
     const rows = [CSV_HEADER].concat(getHistory().map((r) => [
-      r.date, r.name, r.cat, r.purpose, fixed(r.total - r.tps - r.tvq), fixed(r.tps), fixed(r.tvq),
+      r.date, r.name, r.cat, r.purpose, r.tax || 'QC',
+      fixed(r.total - r.tps - r.tvq), fixed(r.tps), fixed(r.tvq),
       fixed(r.total), r.tpsNo || '', r.tvqNo || '', r.file || '', r.link || '', r.status
     ]));
     const blob = new Blob(['﻿' + rows.map(csvRow).join('')], { type: 'text/csv' });

@@ -91,13 +91,18 @@
       <textarea id="fPurpose" placeholder="e.g. Client lunch with Groupe Nadeau"></textarea>
     </div>
 
+    <div class="f">
+      <label for="fTax">Tax group (province)</label>
+      <select id="fTax"></select>
+    </div>
+
     <div class="f row">
       <div>
-        <label for="fTps">TPS / GST ($)</label>
+        <label for="fTps" id="lblT1">TPS ($)</label>
         <input type="text" id="fTps" inputmode="decimal" placeholder="0.00">
       </div>
-      <div>
-        <label for="fTvq">TVQ / QST ($)</label>
+      <div id="wrapT2">
+        <label for="fTvq" id="lblT2">TVQ ($)</label>
         <input type="text" id="fTvq" inputmode="decimal" placeholder="0.00">
       </div>
     </div>
@@ -106,17 +111,17 @@
       <button class="chip" id="zeroBtn">No tax</button>
     </div>
     <div class="sum"><span>Subtotal before tax</span><b id="sub">$0.00</b></div>
-    <div class="sum plain"><span>Subtotal + TPS + TVQ</span><b id="chk">$0.00</b></div>
+    <div class="sum plain"><span id="chkLbl">Subtotal + tax</span><b id="chk">$0.00</b></div>
   </div>
 
   <h3>Registration numbers (optional)</h3>
   <div class="card">
     <div class="f">
-      <label for="fTpsNo">TPS / GST number</label>
+      <label for="fTpsNo" id="lblT1No">TPS number</label>
       <input type="text" id="fTpsNo" placeholder="123456789 RT0001" autocomplete="off" autocapitalize="characters">
     </div>
-    <div class="f">
-      <label for="fTvqNo">TVQ / QST number</label>
+    <div class="f" id="wrapT2No">
+      <label for="fTvqNo" id="lblT2No">TVQ number</label>
       <input type="text" id="fTvqNo" placeholder="1234567890 TQ0001" autocomplete="off" autocapitalize="characters">
     </div>
     <p class="hint">Remembered per merchant. Next time you type the same name these fill in by themselves.</p>
@@ -180,10 +185,15 @@
         <option value="flat">receipts (no subfolders)</option>
       </select>
     </div>
-    <div class="f row">
-      <div><label for="sTps">TPS rate %</label><input type="text" id="sTps" inputmode="decimal"></div>
-      <div><label for="sTvq">TVQ rate %</label><input type="text" id="sTvq" inputmode="decimal"></div>
+    <div class="f">
+      <label for="sTaxDefault">Default tax group</label>
+      <select id="sTaxDefault"></select>
     </div>
+    <div class="f row">
+      <div><label for="sTps">Custom rate 1 %</label><input type="text" id="sTps" inputmode="decimal"></div>
+      <div><label for="sTvq">Custom rate 2 %</label><input type="text" id="sTvq" inputmode="decimal"></div>
+    </div>
+    <p class="hint">The custom rates are used only by receipts whose tax group is set to <b>Custom</b>.</p>
     <div class="f">
       <label for="sQual">Image size</label>
       <select id="sQual">
