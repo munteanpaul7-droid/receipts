@@ -79,6 +79,8 @@ const DEFAULTS = {
   root: 'receipts',
   struct: 'ym',
   taxGroup: 'QC',
+  aiUrl: '',
+  autoScan: '1',
   tpsRate: '5',
   tvqRate: '9.975',
   maxPx: '1600'
@@ -436,6 +438,7 @@ function shrinkImage(file, maxPx) {
 
 let pending = null;   // { blob, ext, thumb } for the photo currently attached
 let prevUrl = '';     // object URL backing the preview image, revoked on clear
+let catTouched = false; // once you pick a category yourself, the scan leaves it alone
 
 /* ---------------------------------------------------------------- render */
 
@@ -539,6 +542,7 @@ function clearPreview() {
   $('prevImg').removeAttribute('src');
   $('prevPdf').className = 'pdf hide';
   $('prevSz').className = 'sz';
+  $('scanRow').className = 'scan hide';
 }
 
 function resetForm(keepDate) {
@@ -575,7 +579,117 @@ async function attach(file) {
   }
 
   $('prev').className = 'prev';
-  toast((isPdf ? 'PDF' : 'Photo') + ' attached. Fill in the details.', 'good');
+
+  if (isPdf || !cfg('aiUrl')) {
+    toast((isPdf ? 'PDF' : 'Photo') + ' attached. Fill in the details.', 'good');
+  } else if (cfg('autoScan') === '1') {
+    scanReceipt(false);
+  } else {
+    setScan('', 'Tap Read to fill the fields in for you.');
+  }
+}
+
+/* ------------------------------------------------------- AI receipt scan */
+
+function setScan(state, msg) {
+  $('scanRow').className = 'scan' + (state === 'good' ? ' good' : state === 'bad' ? ' bad' : '');
+  $('scanSpin').className = state === 'busy' ? 'spin' : 'spin hide';
+  $('scanMsg').textContent = msg;
+  $('scanBtn').textContent = state === 'busy' ? 'Reading' : 'Read again';
+  $('scanBtn').disabled = state === 'busy';
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(',')[1] || '');
+    r.onerror = () => reject(new Error('Could not read the image.'));
+    r.readAsDataURL(blob);
+  });
+}
+
+/* Fills what the form does not already have. Anything typed by hand wins —
+   the scan is a head start, never an overwrite. */
+function applyScan(f) {
+  const filled = [];
+  const put = (id, val, label) => {
+    if (val === null || val === undefined || val === '') return;
+    if ($(id).value.trim()) return;
+    $(id).value = val;
+    filled.push(label);
+  };
+
+  let group = '';
+  if (f.tax_group && TAX_GROUPS.some((g) => g.code === f.tax_group)) {
+    $('fTax').value = f.tax_group;
+    S.set('lastTax', f.tax_group);
+    applyTaxGroup(f.tax_group, false);
+    group = f.tax_group;
+  }
+  if (f.category && CATEGORIES.indexOf(f.category) >= 0 && !catTouched) {
+    $('fCat').value = f.category;
+  }
+
+  put('fName', f.merchant, 'merchant');
+  if (/^\d{4}-\d{2}-\d{2}$/.test(f.date || '')) { $('fDate').value = f.date; filled.push('date'); }
+  put('fTotal', f.total !== null && f.total !== undefined ? fixed(f.total) : '', 'total');
+
+  const rt = taxRates($('fTax').value);
+  put('fTps', f.federal_tax !== null && f.federal_tax !== undefined ? fixed(f.federal_tax) : '', rt.t1);
+  if (rt.t2) put('fTvq', f.provincial_tax !== null && f.provincial_tax !== undefined ? fixed(f.provincial_tax) : '', rt.t2);
+
+  const nosBefore = filled.length;
+  put('fTpsNo', f.federal_tax_number, '');
+  put('fTvqNo', f.provincial_tax_number, '');
+  if (filled.length > nosBefore) filled.push('tax numbers');
+
+  /* Nothing on the receipt broke out the tax, so derive it from the total. */
+  if (!num($('fTps').value) && num($('fTotal').value) > 0 && f.federal_tax === null) {
+    $('calcBtn').click();
+    filled.push('taxes (calculated)');
+  }
+
+  if (group) filled.push('province ' + group);
+  updateSums();
+  return filled.filter(Boolean);
+}
+
+async function scanReceipt(manual) {
+  if (!pending || pending.ext === 'pdf') {
+    if (manual) toast('Attach a photo first.', 'bad');
+    return;
+  }
+  const url = cfg('aiUrl');
+  if (!url) {
+    setScan('bad', 'No scanner set up yet — add its URL in Settings.');
+    return;
+  }
+
+  setScan('busy', 'Reading receipt…');
+  try {
+    const image = await blobToBase64(pending.blob);
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image, mediaType: pending.blob.type || 'image/jpeg' })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) throw new Error(data.error || ('scanner returned ' + res.status));
+
+    const f = data.fields || {};
+    const filled = applyScan(f);
+
+    if (f.confidence === 'low') {
+      setScan('bad', f.note || 'Hard to read — check every field before saving.');
+    } else if (!filled.length) {
+      setScan('bad', 'Nothing new to fill in. Check the fields yourself.');
+    } else {
+      setScan('good', 'Filled in ' + filled.join(', ') +
+        (f.confidence === 'medium' ? '. Worth a quick check.' : '. Check it over.'));
+    }
+  } catch (e) {
+    setScan('bad', 'Could not read it: ' + String(e.message || e).slice(0, 80));
+  }
 }
 
 function collect() {
@@ -753,6 +867,8 @@ function boot() {
   $('sTps').value = cfg('tpsRate');
   $('sTvq').value = cfg('tvqRate');
   $('sQual').value = cfg('maxPx');
+  $('sAi').value = cfg('aiUrl');
+  $('sAuto').value = cfg('autoScan');
   $('sOrigin').value = location.origin;
   $('sRedir').value = redirectUri();
 
@@ -767,7 +883,11 @@ function boot() {
   $('prevX').addEventListener('click', clearPreview);
 
   ['fTotal', 'fTps', 'fTvq'].forEach((k) => $(k).addEventListener('input', updateSums));
-  $('fCat').addEventListener('change', () => S.set('lastCat', $('fCat').value));
+  $('fCat').addEventListener('change', () => {
+    catTouched = true;
+    S.set('lastCat', $('fCat').value);
+  });
+  $('scanBtn').addEventListener('click', () => scanReceipt(true));
   $('fTax').addEventListener('change', () => {
     S.set('lastTax', $('fTax').value);
     applyTaxGroup($('fTax').value, true);
@@ -831,6 +951,8 @@ function boot() {
     setCfg('clientId', $('sCid').value.trim());
     setCfg('root', $('sRoot').value.trim() || 'receipts');
     setCfg('struct', $('sStruct').value);
+    setCfg('aiUrl', $('sAi').value.trim().replace(/\/+$/, ''));
+    setCfg('autoScan', $('sAuto').value);
     setCfg('taxGroup', $('sTaxDefault').value);
     setCfg('tpsRate', $('sTps').value.trim() || '5');
     setCfg('tvqRate', $('sTvq').value.trim() || '9.975');
@@ -839,6 +961,47 @@ function boot() {
     applyTaxGroup($('fTax').value, false);
     paintStatus();
     toast('Settings saved.', 'good');
+  });
+
+  /* Sends a small drawn receipt so a green result proves the whole chain:
+     phone -> Worker -> Claude -> back, key and all. */
+  $('aiTest').addEventListener('click', async () => {
+    const url = $('sAi').value.trim().replace(/\/+$/, '');
+    if (!url) { toast('Paste the scanner URL first.', 'bad'); return; }
+    setCfg('aiUrl', url);
+    const btn = $('aiTest');
+    btn.disabled = true; btn.textContent = 'Testing…';
+    try {
+      const c = document.createElement('canvas');
+      c.width = 400; c.height = 300;
+      const x = c.getContext('2d');
+      x.fillStyle = '#fff'; x.fillRect(0, 0, 400, 300);
+      x.fillStyle = '#000'; x.font = 'bold 22px sans-serif';
+      x.fillText('CAFE ESSAI', 20, 44);
+      x.font = '18px sans-serif';
+      x.fillText('Montreal QC   2026-08-23', 20, 82);
+      x.fillText('Sous-total        10.00', 20, 140);
+      x.fillText('TPS               0.50', 20, 172);
+      x.fillText('TVQ               1.00', 20, 204);
+      x.font = 'bold 20px sans-serif';
+      x.fillText('TOTAL            11.50', 20, 250);
+      const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.9));
+      const image = await blobToBase64(blob);
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image, mediaType: 'image/jpeg' })
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok || !d.ok) throw new Error(d.error || ('returned ' + res.status));
+      const f = d.fields || {};
+      toast('Scanner works. It read ' + (f.merchant || '?') + ', total ' +
+            (f.total === null ? '?' : f.total) + ', ' + (f.tax_group || '?') + '.', 'good');
+    } catch (e) {
+      toast('Scanner test failed: ' + String(e.message || e).slice(0, 100), 'bad');
+    } finally {
+      btn.disabled = false; btn.textContent = 'Test the scanner';
+    }
   });
 
   $('csvBtn').addEventListener('click', () => {

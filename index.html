@@ -63,6 +63,12 @@
     <span class="sz" id="prevSz"></span>
   </div>
 
+  <div class="scan hide" id="scanRow">
+    <span class="spin hide" id="scanSpin"></span>
+    <span id="scanMsg">Reading receipt&hellip;</span>
+    <button class="chip" id="scanBtn">Read again</button>
+  </div>
+
   <div class="card">
     <div class="f row">
       <div>
@@ -169,6 +175,23 @@
       <input type="text" id="sRedir" readonly>
     </div>
     <button class="btn ghost" id="copyUris">Copy both</button>
+  </div>
+
+  <h3>AI scanning</h3>
+  <div class="card">
+    <div class="f">
+      <label for="sAi">Scanner URL</label>
+      <input type="text" id="sAi" placeholder="https://receipt-ocr.xxx.workers.dev" autocomplete="off" spellcheck="false">
+      <p class="hint">Your Cloudflare Worker. It holds the Anthropic key so the app never has to.</p>
+    </div>
+    <div class="f">
+      <label for="sAuto">When you attach a photo</label>
+      <select id="sAuto">
+        <option value="1">Read it automatically</option>
+        <option value="0">Only when I tap Read</option>
+      </select>
+    </div>
+    <button class="btn ghost" id="aiTest">Test the scanner</button>
   </div>
 
   <h3>Folder &amp; taxes</h3>
