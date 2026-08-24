@@ -83,10 +83,13 @@ const SYSTEM = [
   '  fields null, and say so in note.'
 ].join('\n');
 
+/* The origin is echoed back even when it is refused. The 403 is what keeps
+   the key private; withholding the CORS header on top of it only stops the
+   browser reading the reason, so the app reported "the Worker may have been
+   deleted" when the real answer was one line of ALLOWED_ORIGINS away. */
 function cors(origin) {
-  const ok = ALLOWED_ORIGINS.indexOf(origin) >= 0;
   return {
-    'Access-Control-Allow-Origin': ok ? origin : ALLOWED_ORIGINS[0],
+    'Access-Control-Allow-Origin': origin || ALLOWED_ORIGINS[0],
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
     'Access-Control-Max-Age': '86400',

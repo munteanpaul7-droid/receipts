@@ -144,6 +144,12 @@ and 15% HST provinces (New Brunswick, Newfoundland, PEI) can't be told apart fro
 their tax alone, so the province is left on your default. A PDF holding several
 receipts at once will only give you the first. Check the boxes before saving.
 
+The province comes from the tax **labels**, not just the word TPS: a bilingual
+till anywhere in Canada prints "GST/TPS", so only TVQ, QST, or a TPS standing
+without a GST beside it means Quebec. And a subtotal the app worked out for
+itself is never treated as confirmation — only one actually printed on the
+receipt can vouch for the tax.
+
 If you want the best possible reading, switch to **Claude** — that needs an
 Anthropic account with credit, roughly a dollar or two a month at a hundred
 receipts. Note this is **separate from a Claude Pro or Max subscription**, which

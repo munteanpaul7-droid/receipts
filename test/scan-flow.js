@@ -145,6 +145,35 @@ console.log('\n== an oversize PDF is refused kindly, without a network call ==')
   ok('and tells you to type it in', /type the details in/i.test(c._els.scanMsg.textContent), c._els.scanMsg.textContent);
 }
 
+console.log('\n== the spinner always stops, whatever fails ==');
+{
+  /* Reading the file off the phone can fail as readily as sending it. That
+     throw used to escape the caller, leaving the row on "Reading" with the
+     button disabled and no way back. */
+  const c = scanEnv([GOOD]);
+  c._ls.setItem('rc_cfg_reader', JSON.stringify('ai'));
+  c.blobToBase64 = () => Promise.reject(new Error('FileReader died'));
+  vm.runInContext('pending = { blob: { type: "image/jpeg", size: 900 }, ext: "jpg" }', c);
+  await c.scanReceipt(true);
+  ok('the row is not left spinning', c._els.scanRow.className !== 'scan busy', c._els.scanRow.className);
+  ok('the Read button is usable again', c._els.scanBtn.disabled === false);
+  ok('and it says what to do', /attach it again|type/i.test(c._els.scanMsg.textContent), c._els.scanMsg.textContent);
+}
+
+console.log('\n== clearing the photo mid-retry does not read the wrong file ==');
+{
+  const c = scanEnv([{ status: 429, body: { ok: false, code: 'rate_limit' } }, GOOD]);
+  c._ls.setItem('rc_cfg_reader', JSON.stringify('ai'));
+  const p = c.scanReceipt(true);
+  /* The retry waits 1.5s; drop the attachment while it does. */
+  await new Promise((r) => setTimeout(r, 300));
+  vm.runInContext('pending = null', c);
+  await p;
+  ok('the retry was abandoned', c.calls === 1, String(c.calls));
+  ok('the row is not left spinning', c._els.scanRow.className !== 'scan busy', c._els.scanRow.className);
+  ok('and it asks for a photo', /attach a photo/i.test(c._els.scanMsg.textContent), c._els.scanMsg.textContent);
+}
+
 console.log('\n' + (fail ? 'FAILED ' + fail : 'all ' + pass + ' passed'));
 process.exit(fail ? 1 : 0);
 })();

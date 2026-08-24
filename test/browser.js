@@ -13,6 +13,37 @@
 
 const { chromium } = require('playwright-core');
 const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+/* Both fixtures are built here rather than assumed to exist. A test that
+   silently depends on a file someone once put in /tmp passes on the machine
+   that made it and quietly skips its checks everywhere else. */
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'receipts-test-'));
+const JPG = path.join(TMP, 'receipt.jpg');
+const PDF = path.join(TMP, 'receipt.pdf');
+
+function writePdfFixture(file) {
+  const content = Buffer.from(
+    'BT /F1 14 Tf 40 200 Td 18 TL\n(SOUS-TOTAL 24.00) Tj T*\n(TPS 1.20) Tj T*\n' +
+    '(TVQ 2.39) Tj T*\n(TOTAL 27.59) Tj T*\nET');
+  const objs = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 260] ' +
+      '/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    '<< /Length ' + content.length + ' >>\nstream\n' + content + '\nendstream'
+  ];
+  let pdf = '%PDF-1.4\n';
+  const offsets = [];
+  objs.forEach((o, i) => { offsets.push(pdf.length); pdf += (i + 1) + ' 0 obj\n' + o + '\nendobj\n'; });
+  const xref = pdf.length;
+  pdf += 'xref\n0 ' + (objs.length + 1) + '\n0000000000 65535 f \n';
+  offsets.forEach((o) => { pdf += String(o).padStart(10, '0') + ' 00000 n \n'; });
+  pdf += 'trailer\n<< /Size ' + (objs.length + 1) + ' /Root 1 0 R >>\nstartxref\n' + xref + '\n%%EOF\n';
+  fs.writeFileSync(file, pdf, 'latin1');
+}
 
 /* The pinned build number changes between images, so discover it. */
 function chromePath() {
@@ -94,8 +125,9 @@ const ok = (n, c, x) => { if (c) { pass++; console.log('  ok   ' + n); } else { 
     'ByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZ' +
     'WmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXG' +
     'x8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/9oACAEBAAA/APn+v//Z', 'base64');
-  fs.writeFileSync('/tmp/receipts-test.jpg', jpg);
-  await page.setInputFiles('#libIn', '/tmp/receipts-test.jpg');
+  fs.writeFileSync(JPG, jpg);
+  writePdfFixture(PDF);
+  await page.setInputFiles('#libIn', JPG);
   await page.waitForTimeout(2500);
 
   const msg1 = await page.textContent('#scanMsg');
@@ -151,7 +183,7 @@ const ok = (n, c, x) => { if (c) { pass++; console.log('  ok   ' + n); } else { 
       return real(u, o);
     };
   });
-  await page.setInputFiles('#libIn', '/tmp/receipts-test.jpg');
+  await page.setInputFiles('#libIn', JPG);
   await page.waitForTimeout(2500);
   ok('merchant filled from OCR', (await page.inputValue('#fName')) === 'RESTAURANT CHEZ ASHTON', await page.inputValue('#fName'));
   ok('total filled', (await page.inputValue('#fTotal')) === '27.59', await page.inputValue('#fTotal'));
@@ -180,7 +212,7 @@ const ok = (n, c, x) => { if (c) { pass++; console.log('  ok   ' + n); } else { 
   });
   await page.click('#prevX');
   await page.evaluate(() => { ['fTotal','fTps','fTvq','fName'].forEach(id => document.getElementById(id).value = ''); });
-  await page.setInputFiles('#libIn', '/tmp/receipts-test.pdf');
+  await page.setInputFiles('#libIn', PDF);
   await page.waitForTimeout(2500);
   ok('the PDF preview card is shown', await page.isVisible('#prevPdf'));
   ok('total read from the PDF', (await page.inputValue('#fTotal')) === '27.59', await page.inputValue('#fTotal'));
@@ -205,6 +237,7 @@ const ok = (n, c, x) => { if (c) { pass++; console.log('  ok   ' + n); } else { 
   ok('no unexplained console errors', realErrors.length === 0, realErrors.join(' | '));
 
   await browser.close();
+  try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (e) {}
   console.log('\n' + (fail ? 'FAILED ' + fail : 'all ' + pass + ' passed'));
   process.exit(fail ? 1 : 0);
 })();

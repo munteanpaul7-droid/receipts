@@ -128,6 +128,19 @@ console.log('\n== a PDF receipt goes to Claude as a document, not an image ==');
   ok('health advertises what it accepts', health.accepts.includes('application/pdf'), health.accepts);
 }
 
+console.log('\n== a refused origin can read why it was refused ==');
+{
+  /* Withholding the CORS header on top of the 403 only stops the browser
+     reading the reason, so the app blamed a deleted Worker instead of
+     pointing at ALLOWED_ORIGINS. The 403 is the security control. */
+  const res = await worker.fetch(post(IMG, 'https://evil.example'), { ANTHROPIC_API_KEY: 'k' });
+  ok('still refused', res.status === 403);
+  ok('but readable by that origin',
+     res.headers.get('Access-Control-Allow-Origin') === 'https://evil.example',
+     res.headers.get('Access-Control-Allow-Origin'));
+  ok('and names the cause', (await res.json()).code === 'origin');
+}
+
 console.log('\n== CORS still lets the phone in ==');
 {
   const pre = await worker.fetch(new Request('https://w.dev/', { method: 'OPTIONS', headers: { Origin: ORIGIN } }), {});

@@ -92,7 +92,7 @@ const DEFAULTS = {
 /* Bumped whenever app.js, index.html or styles.css change. Shown in Settings
    so "did the update actually land" is a question you can answer from the
    phone, and used by the service worker to name its cache. */
-const APP_VERSION = '2026-08-24.3';
+const APP_VERSION = '2026-08-24.4';
 
 /* ------------------------------------------------------------- utilities */
 
@@ -954,7 +954,11 @@ function findMerchant(lines) {
    them. Anything still ambiguous is left empty so your own default stands
    rather than being overwritten with a guess. */
 function inferGroup(text, sub, fed, prov) {
-  if (/\b(?:tvq|qst)\b/i.test(text) || /\btps\b/i.test(text)) return 'QC';
+  /* TVQ and QST name a tax that exists only in Quebec, so either settles it.
+     TPS does not: a bilingual till anywhere in the country prints "GST/TPS",
+     and an Ontario one prints "HST/TVH" beside it. Treating TPS as proof of
+     Quebec filed every bilingual Ontario receipt under the wrong province. */
+  if (/\b(?:tvq|qst)\b/i.test(text)) return 'QC';
 
   const near = (a, b) => a > 0 && Math.abs(a - b) <= 0.4;
   const fr = sub > 0 ? (fed / sub) * 100 : 0;
@@ -969,6 +973,10 @@ function inferGroup(text, sub, fed, prov) {
   }
   if (near(fr, 13)) return 'ON';
   if (near(fr, 14)) return 'NS';
+  /* TPS with no GST beside it. A bilingual till anywhere prints both, so
+     TPS standing alone is Quebec naming its own federal tax — provided no
+     HST contradicts it. */
+  if (/\btps\b/i.test(text) && !/\bgst\b/i.test(text) && !/\b(?:hst|tvh)\b/i.test(text)) return 'QC';
   /* 15% is New Brunswick, Newfoundland and PEI alike, and a lone 5% could
      be any of Alberta, NWT, Nunavut or Yukon. Neither is knowable. */
   return '';
@@ -984,7 +992,7 @@ function inferGroup(text, sub, fed, prov) {
 const AMOUNT_SRC = '(?:\\d{1,3}(?:[ \u00a0,]\\d{3})+|\\d+)[.,]\\d{2}(?![\\d]|[.,]\\d)';
 const LABEL_SRC = [
   'sous[\\s\\-]*total', 'sub[\\s\\-]*total',
-  'monnaie', 'rendu', 'comptant', 'esp[\u00e8e]ces', 'tendered', 'change',
+  'monnaie', 'rendu', 'comptant', 'esp[\u00e8e]ces', 'tendered', 'change', 'cash',
   'pourboire', 'gratuity', 'tip',
   'tps', 'gst', 'hst', 'tvh',
   'tvq', 'qst', 'pst', 'rst', 'tvp',
@@ -1004,7 +1012,7 @@ const LABEL_REACH = 40;
 function labelKind(word) {
   const l = String(word).toLowerCase();
   if (/sous|sub/.test(l)) return 'subtotal';
-  if (/monnaie|rendu|comptant|esp|tendered|change/.test(l)) return 'skip';
+  if (/monnaie|rendu|comptant|esp|tendered|change|cash/.test(l)) return 'skip';
   if (/pourboire|gratuity|tip/.test(l)) return 'tip';
   if (/tps|gst|hst|tvh/.test(l)) return 'fed';
   if (/tvq|qst|pst|rst|tvp/.test(l)) return 'prov';
@@ -1035,7 +1043,10 @@ function parseReceiptText(text) {
   while ((m = TOKEN_RE.exec(body))) {
     if (m[1] !== undefined) {
       const amt = num(m[1]);
-      allAmounts.push(amt);
+      /* Money handed over and change given back are not amounts the receipt
+         is for, so they must not survive into the largest-amount fallback —
+         a $20 note tendered for an $8.70 purchase would become the total. */
+      if (claim !== 'skip') allAmounts.push(amt);
       /* A label owns the figure printed next to it, across a gap of padding
          spaces at most. Without this a label left stranded with no amount of
          its own — the bare "TPS" beside a registration number, once that
@@ -1067,14 +1078,24 @@ function parseReceiptText(text) {
   if (total === null && allAmounts.length) total = Math.max.apply(null, allAmounts);
   if (!total || total <= 0) return null;
 
-  if (subtotal === null && fedTax !== null) {
-    subtotal = total - fedTax - (provTax || 0);
+  /* Only a subtotal actually printed on the receipt can corroborate the tax.
+     One worked out by subtracting the tax from the total makes the sum below
+     add up by construction, which would report perfect confidence in figures
+     nothing has checked. A tax line misread as 99.00 on a $62 receipt gave a
+     subtotal of -36.87 and still came back green. */
+  const subtotalPrinted = subtotal !== null;
+  if (!subtotalPrinted && fedTax !== null) {
+    const derived = total - fedTax - (provTax || 0);
+    /* A negative subtotal means the tax was misread, not that the shop paid
+       you. Keep the total, drop the tax, and say so. */
+    if (derived > 0) subtotal = derived;
+    else { fedTax = null; provTax = null; }
   }
 
   /* Does the arithmetic close? That single check is worth more than any
      amount of pattern matching for knowing whether to trust this. */
   const sum = (subtotal || 0) + (fedTax || 0) + (provTax || 0);
-  const balances = subtotal !== null && fedTax !== null &&
+  const balances = subtotalPrinted && fedTax !== null &&
                    Math.abs(sum - total) <= 0.02 + (tip || 0);
 
   const group = inferGroup(clean, subtotal || 0, fedTax || 0, provTax || 0);
@@ -1088,7 +1109,8 @@ function parseReceiptText(text) {
 
   const note = balances ? null
     : (fedTax === null ? 'No tax line was readable — check the tax boxes.'
-                       : 'The tax does not add up to the total; check it.');
+       : !subtotalPrinted ? 'No subtotal was printed, so the tax could not be checked.'
+                          : 'The tax does not add up to the total; check it.');
 
   return {
     merchant: findMerchant(lines),
@@ -1223,6 +1245,7 @@ function withDeadline(promise, ms) {
 }
 
 async function tryReadDrive() {
+  if (!pending) return { fail: { code: 'gone', msg: 'The photo was removed.', fix: 'Attach it again.' } };
   if (!connected() && !S.get('granted', false)) {
     return { fail: Object.assign({ code: 'no_drive' }, DRIVE_CAUSES.no_drive) };
   }
@@ -1306,8 +1329,17 @@ function applyScan(f) {
 /* One attempt at the scanner. Resolves with what happened rather than
    throwing, so the decision about retrying lives in one place. */
 async function tryScan(url) {
-  const image = await blobToBase64(pending.blob);
-  let res;
+  if (!pending) return { fail: { code: 'gone', msg: 'The photo was removed.', fix: 'Attach it again.' } };
+  let image, res;
+  try {
+    /* Reading the file is as capable of failing as sending it, and a throw
+       here used to escape the caller entirely, leaving the spinner turning
+       with the Read button disabled. */
+    image = await blobToBase64(pending.blob);
+  } catch (e) {
+    return { fail: { code: 'unknown', msg: 'That photo could not be read off the phone.',
+                     fix: 'Attach it again, or type the details in.' } };
+  }
   try {
     res = await fetchWithTimeout(url, {
       method: 'POST',
@@ -1359,6 +1391,9 @@ async function scanReceipt(manual) {
   if (out.fail && out.fail.transient && out.fail.code !== 'offline') {
     setScan('busy', 'Busy — trying once more…');
     await new Promise((r) => setTimeout(r, 1500));
+    /* Someone can clear the preview or attach a different photo while that
+       pause runs. Retrying then would read the wrong file, or none. */
+    if (!pending) { setScan('', 'Attach a photo to have it read.'); return; }
     out = await attempt();
   }
 
@@ -1625,7 +1660,15 @@ function boot() {
     setCfg('clientId', id);
     if (!initTokenClient()) { toast('Google sign-in script did not load. Check your connection.', 'bad'); return; }
     requestToken(false)
-      .then(() => { toast('Connected to Google Drive.', 'good'); flushQueue(false); })
+      .then(() => {
+        toast('Connected to Google Drive.', 'good');
+        /* A fresh install trips the breaker on "not connected" before you
+           ever reach this button. Connecting is the fix, so clear it now
+           rather than leaving the reader paused for a quarter of an hour. */
+        noteScanOk();
+        paintScannerState();
+        flushQueue(false);
+      })
       .catch((e) => toast('Sign-in cancelled or blocked (' + e.message + ').', 'bad'));
   });
   $('discBtn').addEventListener('click', signOut);

@@ -11,7 +11,7 @@
 
 /* Keep in step with APP_VERSION in app.js. Changing it retires every older
    cache on activate. */
-const CACHE = 'receipts-2026-08-24.3';
+const CACHE = 'receipts-2026-08-24.4';
 const SHELL = ['./', './index.html', './styles.css', './app.js', './manifest.webmanifest', './icon-180.png', './icon-512.png'];
 const NET_TIMEOUT = 3500;
 
@@ -46,15 +46,22 @@ self.addEventListener('message', (e) => {
   if (e.data === 'skipWaiting') self.skipWaiting();
 });
 
+/* Resolves only with a response worth showing. A 503 from a half-finished
+   deploy, or the login page a hotel wifi substitutes, must not be served in
+   place of the stored app — and must certainly not overwrite it. Anything
+   else rejects, which sends the caller to the cache. */
+function usable(res) {
+  return res && res.ok && res.type !== 'opaqueredirect' && !res.redirected;
+}
+
 function fromNetwork(req, ms) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('timeout')), ms);
     fetch(req).then((res) => {
       clearTimeout(timer);
-      if (res && res.ok) {
-        const copy = res.clone();
-        caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {});
-      }
+      if (!usable(res)) return reject(new Error('unusable'));
+      const copy = res.clone();
+      caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {});
       resolve(res);
     }, (err) => { clearTimeout(timer); reject(err); });
   });
@@ -71,7 +78,16 @@ self.addEventListener('fetch', (e) => {
     /* Network first: whatever is deployed wins over whatever is stored. */
     e.respondWith(
       fromNetwork(req, NET_TIMEOUT).catch(() =>
-        caches.match(req).then((hit) => hit || caches.match('./index.html'))
+        caches.match(req)
+          .then((hit) => hit || caches.match('./index.html'))
+          .then((hit) => hit || caches.match('./'))
+          /* Install adds each shell file separately and tolerates a failure,
+             so the cache can genuinely be missing this one. Resolving with
+             undefined would turn an offline launch into a browser error
+             page; an honest 503 at least says what happened. */
+          .then((hit) => hit || new Response(
+            'Offline, and this app is not stored on the phone yet.',
+            { status: 503, headers: { 'Content-Type': 'text/plain' } }))
       )
     );
     return;
@@ -82,7 +98,7 @@ self.addEventListener('fetch', (e) => {
   e.respondWith(
     caches.match(req).then((hit) => {
       const net = fetch(req).then((res) => {
-        if (res && res.ok) {
+        if (usable(res)) {
           const copy = res.clone();
           caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {});
         }

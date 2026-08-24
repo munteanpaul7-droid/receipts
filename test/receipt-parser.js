@@ -170,13 +170,74 @@ console.log('\n== a dotted date is not money ==');
   ok('but 23.08 alone still is', amountsIn('TOTAL 23.08')[0] === 23.08, amountsIn('TOTAL 23.08'));
 }
 
+console.log('\n== a bilingual till does not move the receipt to Quebec ==');
+{
+  /* "TPS" appears on bilingual receipts countrywide. Only TVQ and QST name
+     a tax that exists nowhere but Quebec. */
+  const on = parseReceiptText(['CANADIAN TIRE','Ottawa ON','Subtotal 54.98','GST/TPS/HST 13% 7.15','TOTAL 62.13'].join('\n'));
+  ok('bilingual Ontario stays Ontario', on.tax_group === 'ON', on.tax_group);
+
+  const qc = parseReceiptText(['SOUS-TOTAL 24.00','TPS 1.20','TVQ 2.39','TOTAL 27.59'].join('\n'));
+  ok('TVQ still means Quebec', qc.tax_group === 'QC', qc.tax_group);
+
+  const lone = parseReceiptText(['DEP','TPS 1.20','TOTAL 27.59'].join('\n'));
+  ok('TPS standing alone is still Quebec', lone.tax_group === 'QC', lone.tax_group);
+
+  const ab = parseReceiptText(['SHOP','Calgary AB','Subtotal 100.00','GST/TPS 5.00','TOTAL 105.00'].join('\n'));
+  ok('a bilingual Alberta till is not Quebec', ab.tax_group === '', ab.tax_group);
+
+  const hst = parseReceiptText(['SHOP','Subtotal 100.00','HST 15.00','TOTAL 115.00'].join('\n'));
+  ok('15% HST stays unknown', hst.tax_group === '', hst.tax_group);
+}
+
+console.log('\n== a subtotal we worked out ourselves proves nothing ==');
+{
+  /* Deriving subtotal = total - tax makes the balance check true by
+     construction. A tax line misread as 99.00 on a $62 receipt used to come
+     back "high" with a subtotal of -36.87 and no warning at all. */
+  const bad = parseReceiptText(['SHOP','TPS 99.00','TOTAL 62.13'].join('\n'));
+  ok('total is kept', bad.total === 62.13, bad.total);
+  ok('the impossible subtotal is dropped', bad.subtotal === null, bad.subtotal);
+  ok('the misread tax is dropped with it', bad.federal_tax === null, bad.federal_tax);
+  ok('not reported as confident', bad.confidence !== 'high', bad.confidence);
+  ok('and says to check it', !!bad.note, bad.note);
+
+  const derived = parseReceiptText(['SHOP','TPS 3.00','TOTAL 63.00'].join('\n'));
+  ok('a plausible derived subtotal is still offered', derived.subtotal === 60.00, derived.subtotal);
+  ok('but never claims high confidence', derived.confidence !== 'high', derived.confidence);
+  ok('and explains why', /subtotal/i.test(derived.note || ''), derived.note);
+
+  const printed = parseReceiptText(['SHOP','SOUS-TOTAL 24.00','TPS 1.20','TVQ 2.39','TOTAL 27.59'].join('\n'));
+  ok('a printed subtotal that checks out is high', printed.confidence === 'high', printed.confidence);
+}
+
+console.log('\n== money handed over is not the amount spent ==');
+{
+  /* No TOTAL label at all, so the largest amount wins — it must not be the
+     twenty handed across the counter. */
+  const c = parseReceiptText(['DEP DU COIN','ITEM 8.70','COMPTANT 20.00','MONNAIE 11.30'].join('\n'));
+  ok('total is the purchase', c.total === 8.70, c.total);
+
+  const e = parseReceiptText(['SHOP','ITEM 8.70','CASH 20.00','CHANGE 11.30'].join('\n'));
+  ok('and in English too', e.total === 8.70, e.total);
+}
+
 console.log('\n== dates ==');
 ok('ISO', findDate('Date: ' + recent(2)) === recent(2));
 ok('day-first numeric', findDate(dmy(4)) === recent(4), findDate(dmy(4)));
 ok('a future date is rejected', findDate('2099-01-01') === null, findDate('2099-01-01'));
 ok('an ancient date is rejected', findDate('1999-05-05') === null);
-ok('textual French month', /^\d{4}-\d{2}-\d{2}$/.test(String(findDate('23 AOUT 2026'))), findDate('23 AOUT 2026'));
-ok('textual English month', /^\d{4}-\d{2}-\d{2}$/.test(String(findDate('AUG 23, 2026'))), findDate('AUG 23, 2026'));
+{
+  /* Built from today so these keep passing as the clock moves; a hardcoded
+     year eventually falls outside plausibleDate's three-year window. */
+  const FR = ['JANV','FEV','MARS','AVR','MAI','JUIN','JUIL','AOUT','SEPT','OCT','NOV','DEC'];
+  const EN = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+  const t = new Date(today); t.setDate(t.getDate() - 6);
+  const d = t.getDate(), mo = t.getMonth(), y = t.getFullYear();
+  const want = recent(6);
+  ok('textual French month', findDate(d + ' ' + FR[mo] + ' ' + y) === want, findDate(d + ' ' + FR[mo] + ' ' + y));
+  ok('textual English month', findDate(EN[mo] + ' ' + d + ', ' + y) === want, findDate(EN[mo] + ' ' + d + ', ' + y));
+}
 
 console.log('\n== 15% HST is left blank because three provinces share it ==');
 {
