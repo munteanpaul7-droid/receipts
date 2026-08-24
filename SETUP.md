@@ -210,4 +210,16 @@ old caches get retired.
 for actually exists in `index.html`, and that the scanner behaves when the
 scanner is broken — it runs `app.js` and the Worker against a stubbed network
 and asserts each failure produces the right diagnosis, that hopeless failures
-are not retried, and that the form keeps working throughout.
+are not retried, and that the form keeps working throughout. It needs nothing
+but Node.
+
+There is also a browser test, kept separate because it is the only thing here
+with a dependency. It opens the actual app in Chromium and checks it boots
+clean, that a dead scanner produces a readable explanation, that three failures
+pause it, and that the service worker registers:
+
+```bash
+node test/serve.js &          # static server on :8099
+npm install playwright-core   # Chromium itself is already on the machine
+node test/browser.js
+```
