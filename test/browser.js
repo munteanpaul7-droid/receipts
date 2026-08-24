@@ -168,7 +168,8 @@ const ok = (n, c, x) => { if (c) { pass++; console.log('  ok   ' + n); } else { 
   await page.reload({ waitUntil: 'load' });
   await page.waitForTimeout(700);
   await page.evaluate(() => {
-    const TEXT = ['RESTAURANT CHEZ ASHTON', 'Quebec QC', '2026-08-23',
+    const TEXT = ['RESTAURANT CHEZ ASHTON', '830 Boul Charest Est', 'Quebec, QC  G1K 3J7',
+                  'Tel: (418) 522-3449', '2026-08-23',
                   'SOUS-TOTAL 24.00', 'TPS 1.20', 'TVQ 2.39', 'TOTAL 27.59'].join('\n');
     window.__deleted = false;
     const real = window.fetch;
@@ -191,6 +192,17 @@ const ok = (n, c, x) => { if (c) { pass++; console.log('  ok   ' + n); } else { 
   ok('TVQ filled', (await page.inputValue('#fTvq')) === '2.39', await page.inputValue('#fTvq'));
   ok('date filled', (await page.inputValue('#fDate')) === '2026-08-23', await page.inputValue('#fDate'));
   ok('province set to Quebec', (await page.inputValue('#fTax')) === 'QC', await page.inputValue('#fTax'));
+  ok('address filled', (await page.inputValue('#fAddr')) === '830 Boul Charest Est, Quebec, QC G1K 3J7', await page.inputValue('#fAddr'));
+  ok('phone filled', (await page.inputValue('#fPhone')) === '(418) 522-3449', await page.inputValue('#fPhone'));
+  ok('address and phone reach the saved record', await page.evaluate(() => {
+    const m = collect();
+    return m.addr === '830 Boul Charest Est, Quebec, QC G1K 3J7' && m.phone === '(418) 522-3449';
+  }));
+  ok('and are remembered for that merchant', await page.evaluate(() => {
+    rememberVendor(collect());
+    const v = JSON.parse(localStorage.getItem('rc_vendors'))['restaurant chez ashton'];
+    return !!v && v.addr === '830 Boul Charest Est, Quebec, QC G1K 3J7' && v.phone === '(418) 522-3449';
+  }));
   ok('row went green', (await page.getAttribute('#scanRow', 'class')).includes('good'), await page.getAttribute('#scanRow', 'class'));
   ok('temp Drive doc was deleted', await page.evaluate(() => window.__deleted));
   await page.screenshot({ path: '/tmp/receipts-shot-drive-filled.png' });

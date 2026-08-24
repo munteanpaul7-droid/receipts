@@ -66,7 +66,7 @@ const MONTHS = ['January','February','March','April','May','June',
 const CSV_NAME = 'receipts-index.csv';
 /* Keep every header comma-free — appendToIndex splits the stored header on
    commas to spot an out-of-date layout. */
-const CSV_HEADER = ['Date','Merchant','Category','Purpose','Tax group','Subtotal',
+const CSV_HEADER = ['Date','Merchant','Address','Phone','Category','Purpose','Tax group','Subtotal',
                     'Federal tax (GST/HST/TPS)','Provincial tax (PST/QST/TVQ)','Total',
                     'Federal tax no.','Provincial tax no.','File','Drive link','Saved at'];
 
@@ -92,7 +92,7 @@ const DEFAULTS = {
 /* Bumped whenever app.js, index.html or styles.css change. Shown in Settings
    so "did the update actually land" is a question you can answer from the
    phone, and used by the service worker to name its cache. */
-const APP_VERSION = '2026-08-24.4';
+const APP_VERSION = '2026-08-24.5';
 
 /* ------------------------------------------------------------- utilities */
 
@@ -583,6 +583,7 @@ function clearPreview() {
 function resetForm(keepDate) {
   if (!keepDate) $('fDate').value = todayISO();
   $('fTotal').value = ''; $('fName').value = ''; $('fPurpose').value = '';
+  $('fAddr').value = ''; $('fPhone').value = '';
   $('fTps').value = ''; $('fTvq').value = ''; $('fTpsNo').value = ''; $('fTvqNo').value = '';
   clearPreview();
   updateSums();
@@ -934,7 +935,9 @@ function findDate(text) {
    till prints above it and anything that is mostly digits. */
 const NAME_NOISE = /^(?:re[çc]u|receipt|facture|invoice|copie|copy|client|merchant|marchand|bienvenue|welcome|thank|merci|bon\s|tel|t[ée]l|fax|www\.|http|no\.?\s*\d|#\d|caisse|term|terminal|date|heure|time)/i;
 
-function findMerchant(lines) {
+/* Which line the shop name is on. The address is whatever sits directly
+   beneath it, so the two searches share this. -1 when nothing qualifies. */
+function merchantLine(lines) {
   for (let i = 0; i < Math.min(lines.length, 8); i++) {
     const l = lines[i];
     const letters = (l.match(/[A-Za-zÀ-ÿ]/g) || []).length;
@@ -943,10 +946,68 @@ function findMerchant(lines) {
     if (digits > letters) continue;
     if (NAME_NOISE.test(l)) continue;
     if (RX.fed.test(l) || RX.prov.test(l) || RX.total.test(l)) continue;
-    /* Trim a trailing store or branch number, keep the name. */
-    return l.replace(/\s*[#(]?\s*(?:no|n[o°]|store|succ|mag)?\.?\s*\d{2,}\s*\)?\s*$/i, '').trim().slice(0, 60);
+    return i;
   }
-  return null;
+  return -1;
+}
+
+function findMerchant(lines, at) {
+  if (at < 0) return null;
+  /* Trim a trailing store or branch number, keep the name. */
+  return lines[at].replace(/\s*[#(]?\s*(?:no|n[o°]|store|succ|mag)?\.?\s*\d{2,}\s*\)?\s*$/i, '').trim().slice(0, 60) || null;
+}
+
+/* A North American number, in the shapes a till prints. A label wins where
+   there is one; otherwise punctuation is required, because a bare run of ten
+   digits on a receipt is far more likely to be an invoice or a card number
+   than somewhere you could ring. */
+const PHONE_LABELLED = /(?:t[ée]l(?:[ée]phone)?|tel|phone|ph|fax|sans\s+frais|toll[\s-]?free)\s*[.:#]?\s*(\+?1[\s.\-]?)?(\(?\d{3}\)?[\s.\-]\s?\d{3}[\s.\-]\d{4}|\d{10})/i;
+const PHONE_LOOSE = /(?:\+?1[\s.\-])?(?:\(\d{3}\)\s*|\d{3}[\s.\-])\d{3}[\s.\-]\d{4}/;
+
+function tidyPhone(raw) {
+  const d = String(raw).replace(/\D/g, '').replace(/^1(?=\d{10}$)/, '');
+  if (d.length !== 10) return null;
+  return '(' + d.slice(0, 3) + ') ' + d.slice(3, 6) + '-' + d.slice(6);
+}
+
+function findPhone(text) {
+  const labelled = text.match(PHONE_LABELLED);
+  if (labelled) {
+    const t = tidyPhone(labelled[0].replace(/^[^0-9(+]*/, ''));
+    if (t) return t;
+  }
+  const loose = text.match(PHONE_LOOSE);
+  return loose ? tidyPhone(loose[0]) : null;
+}
+
+/* The address sits between the shop name and the first thing that costs
+   money. Canadian receipts give it away with a street number, a province
+   code or a postal code, and the lines run consecutively — so collecting
+   stops at the first line that looks like none of those. */
+const DATE_LINE = /^\s*\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}\b/;
+const POSTAL = /\b[A-Za-z]\d[A-Za-z]\s?\d[A-Za-z]\d\b/;
+const STREET = /^\s*\d+\s*[A-Za-z]?[\s,.-]+\S/;
+const PROVINCE = /\b(?:QC|ON|BC|AB|MB|SK|NS|NB|NL|PE|NT|NU|YT|Quebec|Qu[ée]bec|Ontario|Alberta|Manitoba|Saskatchewan)\b/i;
+
+function findAddress(lines, at) {
+  if (at < 0) return null;
+  const out = [];
+  for (let i = at + 1; i < Math.min(lines.length, at + 6); i++) {
+    const l = lines[i];
+    /* Anything priced, taxed or totalled means the header is over. */
+    if (RX.fed.test(l) || RX.prov.test(l) || RX.total.test(l) || RX.subtotal.test(l)) break;
+    if (amountsIn(l).length) break;
+    /* The phone and the date have fields of their own. Skip past them rather
+       than ending the address, and never absorb them into it — "2026-08-23"
+       is a run of digits with separators, which is also what a street number
+       looks like. */
+    if (PHONE_LABELLED.test(l) || PHONE_LOOSE.test(l)) continue;
+    if (DATE_LINE.test(l) || findDate(l)) continue;
+    if (STREET.test(l) || POSTAL.test(l) || PROVINCE.test(l)) out.push(l.trim());
+    else if (out.length) break;
+  }
+  if (!out.length) return null;
+  return out.join(', ').replace(/\s{2,}/g, ' ').slice(0, 120);
 }
 
 /* Province from the tax lines. The labels alone settle Quebec and rule out
@@ -1112,8 +1173,12 @@ function parseReceiptText(text) {
        : !subtotalPrinted ? 'No subtotal was printed, so the tax could not be checked.'
                           : 'The tax does not add up to the total; check it.');
 
+  const nameAt = merchantLine(lines);
+
   return {
-    merchant: findMerchant(lines),
+    merchant: findMerchant(lines, nameAt),
+    address: findAddress(lines, nameAt),
+    phone: findPhone(body),
     date: findDate(clean),
     total: total,
     subtotal: subtotal,
@@ -1303,6 +1368,8 @@ function applyScan(f) {
   }
 
   put('fName', f.merchant, 'merchant');
+  put('fAddr', f.address, 'address');
+  put('fPhone', f.phone, 'phone');
   if (/^\d{4}-\d{2}-\d{2}$/.test(f.date || '')) { $('fDate').value = f.date; filled.push('date'); }
   put('fTotal', f.total !== null && f.total !== undefined ? fixed(f.total) : '', 'total');
 
@@ -1428,6 +1495,8 @@ function collect() {
   return {
     date,
     name,
+    addr: $('fAddr').value.trim(),
+    phone: $('fPhone').value.trim(),
     cat: $('fCat').value,
     purpose: $('fPurpose').value.trim(),
     tax: $('fTax').value,
@@ -1443,7 +1512,11 @@ function rememberVendor(m) {
   if (!m.name) return;
   const v = S.get('vendors', {});
   const key = m.name.toLowerCase();
-  v[key] = { label: m.name, tpsNo: m.tpsNo, tvqNo: m.tvqNo, cat: m.cat, tax: m.tax };
+  /* Keep whatever we already knew when this receipt did not say. A blurred
+     photo should not erase the address a clear one taught us. */
+  const was = v[key] || {};
+  v[key] = { label: m.name, tpsNo: m.tpsNo, tvqNo: m.tvqNo, cat: m.cat, tax: m.tax,
+             addr: m.addr || was.addr || '', phone: m.phone || was.phone || '' };
   S.set('vendors', v);
   paintMerchants();
 }
@@ -1461,7 +1534,10 @@ async function uploadJob(job) {
 
   const base = m.date + ' ' + safeName(m.cat.split(' ')[0]) + ' ' + safeName(m.name) + ' ' + fixed(m.total);
   const desc =
-    'Merchant: ' + m.name + '\nDate: ' + m.date + '\nCategory: ' + m.cat +
+    'Merchant: ' + m.name +
+    (m.addr ? '\nAddress: ' + m.addr : '') +
+    (m.phone ? '\nPhone: ' + m.phone : '') +
+    '\nDate: ' + m.date + '\nCategory: ' + m.cat +
     '\nPurpose: ' + m.purpose + '\nTax group: ' + g.name + ' (' + g.code + ')' +
     '\nSubtotal: ' + fixed(sub) +
     '\n' + rt.t1 + ': ' + fixed(m.tps) +
@@ -1473,6 +1549,9 @@ async function uploadJob(job) {
     date: m.date, merchant: m.name.slice(0, 100), category: m.cat, taxGroup: g.code,
     total: fixed(m.total), tps: fixed(m.tps), tvq: fixed(m.tvq)
   };
+  /* Drive rejects an empty appProperties value, so only set what we have. */
+  if (m.addr) props.address = m.addr.slice(0, 120);
+  if (m.phone) props.phone = m.phone;
 
   let fileName, link = '';
   if (job.blob) {
@@ -1486,7 +1565,8 @@ async function uploadJob(job) {
   }
 
   await appendToIndex(rootId, [
-    m.date, m.name, m.cat, m.purpose, g.code, fixed(sub), fixed(m.tps), fixed(m.tvq),
+    m.date, m.name, m.addr || '', m.phone || '',
+    m.cat, m.purpose, g.code, fixed(sub), fixed(m.tps), fixed(m.tvq),
     fixed(m.total), m.tpsNo, m.tvqNo, fileName, link, new Date().toISOString()
   ]);
 
@@ -1647,6 +1727,8 @@ function boot() {
     }
     if (!$('fTpsNo').value) $('fTpsNo').value = v.tpsNo || '';
     if (!$('fTvqNo').value) $('fTvqNo').value = v.tvqNo || '';
+    if (!$('fAddr').value) $('fAddr').value = v.addr || '';
+    if (!$('fPhone').value) $('fPhone').value = v.phone || '';
     if (v.cat) $('fCat').value = v.cat;
   });
 
@@ -1835,7 +1917,7 @@ function boot() {
 
   $('csvBtn').addEventListener('click', () => {
     const rows = [CSV_HEADER].concat(getHistory().map((r) => [
-      r.date, r.name, r.cat, r.purpose, r.tax || 'QC',
+      r.date, r.name, r.addr || '', r.phone || '', r.cat, r.purpose, r.tax || 'QC',
       fixed(r.total - r.tps - r.tvq), fixed(r.tps), fixed(r.tvq),
       fixed(r.total), r.tpsNo || '', r.tvqNo || '', r.file || '', r.link || '', r.status
     ]));

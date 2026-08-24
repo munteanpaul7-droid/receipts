@@ -42,6 +42,8 @@ const RECEIPT_SCHEMA = {
   additionalProperties: false,
   properties: {
     merchant:   { type: ['string','null'], description: 'Business name as printed. No address or slogan.' },
+    address:    { type: ['string','null'], description: 'Street address of the business, on one line: street, city, province, postal code. Null if not printed.' },
+    phone:      { type: ['string','null'], description: 'Business telephone number as printed. Null if not printed, and never a fax or an order number.' },
     date:       { type: ['string','null'], description: 'Purchase date as YYYY-MM-DD. Resolve 2-digit years and DD/MM vs MM/DD from context.' },
     total:      { type: ['number','null'], description: 'Final amount actually paid, after tax and tip.' },
     subtotal:   { type: ['number','null'], description: 'Amount before any tax.' },
@@ -55,7 +57,7 @@ const RECEIPT_SCHEMA = {
     confidence: { type: 'string', enum: ['high','medium','low'], description: 'low if the image is blurry, cropped, or not a receipt.' },
     note:       { type: ['string','null'], description: 'One short sentence only if something needs checking by hand. Otherwise null.' }
   },
-  required: ['merchant','date','total','subtotal','federal_tax','provincial_tax',
+  required: ['merchant','address','phone','date','total','subtotal','federal_tax','provincial_tax',
              'tax_group','category','federal_tax_number','provincial_tax_number',
              'tip','confidence','note']
 };
@@ -68,6 +70,10 @@ const SYSTEM = [
   '',
   'Rules:',
   '- Report only what is printed. Never invent a value to fill a field; use null.',
+  '- The business name, its address and its telephone number are usually the',
+  '  first few lines. Put the name in merchant and nothing else — no street,',
+  '  no slogan. Give the address as one line. A number labelled fax, order or',
+  '  invoice is not the phone number.',
   '- Amounts are plain numbers: 114.98, not "$114.98" and not "114,98".',
   '- The total is what was actually charged. On a restaurant bill that means',
   '  the figure after any tip, not the pre-tip subtotal.',

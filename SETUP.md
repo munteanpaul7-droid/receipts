@@ -73,6 +73,8 @@ April 2025. If a rate ever changes, either edit `TAX_GROUPS` at the top of
   supplies, Travel / Hotel, Vehicle / Maintenance, Utilities / Telecom,
   Professional services, Software / Subscriptions, Tools / Equipment,
   Advertising / Marketing, Other.
+- **Address** and **Phone** are read off the receipt when they are printed
+  there, and remembered per merchant just like the registration numbers.
 - TPS and TVQ registration numbers are optional and remembered per merchant —
   type the same shop name next time and they fill themselves in.
 - **Save to Drive** files it.
@@ -89,8 +91,11 @@ receipts/
 ```
 
 Open `receipts-index.csv` in Google Sheets and you have date, merchant,
-category, purpose, tax group, subtotal, federal tax, provincial tax, total,
-both registration numbers, the file name and a direct link. The tax columns are
+address, phone, category, purpose, tax group, subtotal, federal tax,
+provincial tax, total, both registration numbers, the file name and a direct
+link. An index written by an earlier version has fewer columns; rather than
+append rows that would shift every cell left, the app retires it as
+`receipts-index (older layout).csv` and starts a fresh one beside it. The tax columns are
 named generically because their meaning shifts by province — federal holds GST,
 HST or TPS, provincial holds PST, RST, QST or TVQ — and the **Tax group**
 column (QC, ON, BC…) tells you which. Filter on it to total a single province. Each picture also carries the same details in its
