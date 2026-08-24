@@ -222,6 +222,58 @@ console.log('\n== money handed over is not the amount spent ==');
   ok('and in English too', e.total === 8.70, e.total);
 }
 
+console.log('\n== the business name, address and phone ==');
+{
+  const r = parseReceiptText([
+    'RESTAURANT CHEZ ASHTON',
+    '830 Boul Charest Est',
+    'Quebec, QC  G1K 3J7',
+    'Tel: (418) 522-3449',
+    recent(1),
+    'SOUS-TOTAL 24.00','TPS 1.20','TVQ 2.39','TOTAL 27.59'
+  ].join('\n'));
+  ok('name', r.merchant === 'RESTAURANT CHEZ ASHTON', r.merchant);
+  ok('address joins its lines', r.address === '830 Boul Charest Est, Quebec, QC G1K 3J7', r.address);
+  ok('phone', r.phone === '(418) 522-3449', r.phone);
+  ok('the address stops before the money', !/24\.00|TOTAL/.test(r.address || ''), r.address);
+  /* A date is digits with separators, which is also what a street number
+     looks like. It belongs in the date field, not glued onto the address. */
+  ok('the date is not swallowed into the address', (r.address || '').indexOf(recent(1)) < 0, r.address);
+  ok('and still lands in the date field', r.date === recent(1), r.date);
+}
+
+console.log('\n== phone numbers in the shapes tills print them ==');
+{
+  const one = (l) => parseReceiptText(['SHOP', l, 'TOTAL 10.00'].join('\n')).phone;
+  ok('(418) 522-3449', one('Tel: (418) 522-3449') === '(418) 522-3449');
+  ok('418-522-3449', one('418-522-3449') === '(418) 522-3449', one('418-522-3449'));
+  ok('418.522.3449', one('418.522.3449') === '(418) 522-3449', one('418.522.3449'));
+  ok('French label', one('Tél : 418 522-3449') === '(418) 522-3449', one('Tél : 418 522-3449'));
+  ok('leading 1 is dropped', one('Tel 1-800-555-1234') === '(800) 555-1234', one('Tel 1-800-555-1234'));
+  ok('a bare 10-digit run is not a phone', one('Invoice 4185223449') === null, one('Invoice 4185223449'));
+  ok('but a labelled one is', one('Tel 4185223449') === '(418) 522-3449', one('Tel 4185223449'));
+}
+
+console.log('\n== nothing is invented when it is not printed ==');
+{
+  const bare = parseReceiptText(['CORNER STORE', 'TOTAL 10.00'].join('\n'));
+  ok('no address', bare.address === null, bare.address);
+  ok('no phone', bare.phone === null, bare.phone);
+  ok('the name still reads', bare.merchant === 'CORNER STORE', bare.merchant);
+}
+
+console.log('\n== a tax registration number is not a phone ==');
+{
+  const r = parseReceiptText([
+    'CHEZ ASHTON',
+    'TPS 123456789 RT0001',
+    'TVQ 1234567890 TQ0001',
+    'SOUS-TOTAL 24.00','TPS 1.20','TVQ 2.39','TOTAL 27.59'
+  ].join('\n'));
+  ok('phone stays empty', r.phone === null, r.phone);
+  ok('registration numbers still read', r.federal_tax_number === '123456789 RT0001', r.federal_tax_number);
+}
+
 console.log('\n== dates ==');
 ok('ISO', findDate('Date: ' + recent(2)) === recent(2));
 ok('day-first numeric', findDate(dmy(4)) === recent(4), findDate(dmy(4)));
