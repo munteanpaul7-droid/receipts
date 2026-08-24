@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Receipts">
+<meta name="theme-color" content="#0b1220">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="apple-touch-icon" href="./icon-180.png">
+<link rel="stylesheet" href="./styles.css">
+<title>Receipts</title>
+</head>
+<body>
+
+<header>
+  <div class="hbar">
+    <span class="dot" id="dot" title="Drive connection"></span>
+    <h1 id="title">New receipt</h1>
+    <button class="chip hide" id="pendBtn">&#9203; <span id="pendN">0</span></button>
+  </div>
+  <div class="tabs">
+    <button data-tab="new" class="sel">New</button>
+    <button data-tab="hist">History</button>
+    <button data-tab="set">Settings</button>
+  </div>
+</header>
+
+<div class="wrap">
+
+<!-- ===================== NEW ===================== -->
+<section id="t-new">
+  <div id="setupWarn" class="banner hide">
+    Not connected to Google Drive yet. Open <b>Settings</b>, paste your Client ID, then tap <b>Connect Drive</b>.
+    Anything you save before that is kept safely on this phone and uploads later.
+  </div>
+
+  <div class="shot">
+    <button class="btn" id="camBtn">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+      Scan with camera
+    </button>
+    <button class="btn ghost" id="libBtn">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+      From photos
+    </button>
+  </div>
+  <input type="file" id="camIn" accept="image/*" capture="environment" class="hide">
+  <input type="file" id="libIn" accept="image/*,application/pdf" class="hide">
+
+  <div class="prev hide" id="prev">
+    <img id="prevImg" alt="Receipt preview">
+    <button class="x" id="prevX" aria-label="Remove photo">&times;</button>
+    <span class="sz" id="prevSz"></span>
+  </div>
+
+  <div class="card">
+    <div class="f row">
+      <div>
+        <label for="fDate">Date</label>
+        <input type="date" id="fDate">
+      </div>
+      <div>
+        <label for="fTotal">Total paid ($)</label>
+        <input type="text" id="fTotal" inputmode="decimal" placeholder="0.00">
+      </div>
+    </div>
+
+    <div class="f">
+      <label for="fName">Name / merchant</label>
+      <input type="text" id="fName" list="merchants" placeholder="e.g. Costco Wholesale" autocomplete="off" autocapitalize="words">
+      <datalist id="merchants"></datalist>
+    </div>
+
+    <div class="f">
+      <label for="fCat">Category</label>
+      <select id="fCat"></select>
+    </div>
+
+    <div class="f">
+      <label for="fPurpose">Purpose of the transaction</label>
+      <textarea id="fPurpose" placeholder="e.g. Client lunch with Groupe Nadeau"></textarea>
+    </div>
+
+    <div class="f row">
+      <div>
+        <label for="fTps">TPS / GST ($)</label>
+        <input type="text" id="fTps" inputmode="decimal" placeholder="0.00">
+      </div>
+      <div>
+        <label for="fTvq">TVQ / QST ($)</label>
+        <input type="text" id="fTvq" inputmode="decimal" placeholder="0.00">
+      </div>
+    </div>
+    <div class="chips">
+      <button class="chip" id="calcBtn">Auto-calculate taxes from total</button>
+      <button class="chip" id="zeroBtn">No tax</button>
+    </div>
+    <div class="sum"><span>Subtotal before tax</span><b id="sub">$0.00</b></div>
+    <div class="sum plain"><span>Subtotal + TPS + TVQ</span><b id="chk">$0.00</b></div>
+  </div>
+
+  <h3>Registration numbers (optional)</h3>
+  <div class="card">
+    <div class="f">
+      <label for="fTpsNo">TPS / GST number</label>
+      <input type="text" id="fTpsNo" placeholder="123456789 RT0001" autocomplete="off" autocapitalize="characters">
+    </div>
+    <div class="f">
+      <label for="fTvqNo">TVQ / QST number</label>
+      <input type="text" id="fTvqNo" placeholder="1234567890 TQ0001" autocomplete="off" autocapitalize="characters">
+    </div>
+    <p class="hint">Remembered per merchant. Next time you type the same name these fill in by themselves.</p>
+  </div>
+</section>
+
+<!-- ===================== HISTORY ===================== -->
+<section id="t-hist" class="hide">
+  <div class="card" id="histCard"><div class="empty">No receipts yet.</div></div>
+  <button class="btn ghost" id="retryBtn">Retry pending uploads</button>
+  <div class="sp"></div>
+</section>
+
+<!-- ===================== SETTINGS ===================== -->
+<section id="t-set" class="hide">
+  <h3>Google Drive</h3>
+  <div class="card">
+    <div class="f">
+      <label for="sCid">OAuth Client ID</label>
+      <input type="text" id="sCid" placeholder="xxxxx.apps.googleusercontent.com" autocomplete="off" spellcheck="false">
+      <p class="hint">From the Google Cloud Console. See <b>SETUP.md</b> &mdash; about 5 minutes, once.</p>
+    </div>
+    <div class="f">
+      <label for="sWho">Status</label>
+      <input type="text" id="sWho" readonly value="Not connected">
+    </div>
+    <div class="row">
+      <button class="btn" id="connBtn">Connect Drive</button>
+      <button class="btn red" id="discBtn">Sign out</button>
+    </div>
+    <div class="chips">
+      <button class="chip" id="connAlt">Sign in without a popup</button>
+    </div>
+    <p class="hint" id="folderInfo"></p>
+  </div>
+
+  <h3>Paste these into Google Cloud</h3>
+  <div class="card">
+    <div class="f">
+      <label>Authorized JavaScript origin</label>
+      <input type="text" id="sOrigin" readonly>
+    </div>
+    <div class="f">
+      <label>Authorized redirect URI</label>
+      <input type="text" id="sRedir" readonly>
+    </div>
+    <button class="btn ghost" id="copyUris">Copy both</button>
+  </div>
+
+  <h3>Folder &amp; taxes</h3>
+  <div class="card">
+    <div class="f">
+      <label for="sRoot">Drive folder name</label>
+      <input type="text" id="sRoot" placeholder="receipts">
+    </div>
+    <div class="f">
+      <label for="sStruct">Organize by date</label>
+      <select id="sStruct">
+        <option value="ym">receipts / 2026 / 2026-08 August</option>
+        <option value="y">receipts / 2026</option>
+        <option value="flat">receipts (no subfolders)</option>
+      </select>
+    </div>
+    <div class="f row">
+      <div><label for="sTps">TPS rate %</label><input type="text" id="sTps" inputmode="decimal"></div>
+      <div><label for="sTvq">TVQ rate %</label><input type="text" id="sTvq" inputmode="decimal"></div>
+    </div>
+    <div class="f">
+      <label for="sQual">Image size</label>
+      <select id="sQual">
+        <option value="1200">Small &mdash; 1200px (fastest upload)</option>
+        <option value="1600">Standard &mdash; 1600px</option>
+        <option value="2200">High &mdash; 2200px (best for fine print)</option>
+      </select>
+    </div>
+    <button class="btn ghost" id="saveSet">Save settings</button>
+  </div>
+
+  <h3>Data</h3>
+  <div class="card">
+    <p class="hint top0">Every receipt is also appended to <code>receipts-index.csv</code> at the top of your Drive folder. Open that in Google Sheets for totals.</p>
+    <div class="f"><button class="btn ghost" id="csvBtn">Download local CSV backup</button></div>
+    <button class="btn red" id="wipeBtn">Clear local history on this phone</button>
+  </div>
+  <div class="sp"></div>
+</section>
+
+</div>
+
+<div class="bar" id="bar">
+  <div class="inner"><button class="btn ok" id="saveBtn">Save to Drive</button></div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="./app.js"></script>
+</body>
+</html>
