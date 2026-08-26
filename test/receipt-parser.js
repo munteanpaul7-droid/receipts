@@ -274,6 +274,36 @@ console.log('\n== a tax registration number is not a phone ==');
   ok('registration numbers still read', r.federal_tax_number === '123456789 RT0001', r.federal_tax_number);
 }
 
+console.log('\n== the time of the transaction ==');
+{
+  const t = (l) => parseReceiptText(['SHOP', l, 'TOTAL 10.00'].join('\n')).time;
+  ok('24-hour', t('18:42') === '18:42', t('18:42'));
+  ok('with seconds', t('18:42:15') === '18:42', t('18:42:15'));
+  ok('12-hour pm', t('6:42 PM') === '18:42', t('6:42 PM'));
+  ok('12-hour am', t('6:42 AM') === '06:42', t('6:42 AM'));
+  ok('midnight is 00:xx', t('12:05 AM') === '00:05', t('12:05 AM'));
+  ok('noon stays 12:xx', t('12:05 PM') === '12:05', t('12:05 PM'));
+  ok('French 18h42', t('18h42') === '18:42', t('18h42'));
+  ok('labelled', t('Heure: 09:07') === '09:07', t('Heure: 09:07'));
+  ok('an amount is not a time', t('Item 27.59') === null, t('Item 27.59'));
+  ok('a phone number is not a time', t('Tel 418-522-3449') === null, t('Tel 418-522-3449'));
+  ok('an impossible hour is skipped', t('Lane 47:00') === null, t('Lane 47:00'));
+  ok('nothing printed means nothing filled', t('no clock here') === null, t('no clock here'));
+}
+
+console.log('\n== date and time together, as a till prints them ==');
+{
+  const r = parseReceiptText([
+    'RESTAURANT CHEZ ASHTON', '830 Boul Charest Est', 'Quebec, QC  G1K 3J7',
+    recent(1) + '  18:42',
+    'SOUS-TOTAL 24.00','TPS 1.20','TVQ 2.39','TOTAL 27.59'
+  ].join('\n'));
+  ok('date', r.date === recent(1), r.date);
+  ok('time', r.time === '18:42', r.time);
+  ok('the time did not disturb the total', r.total === 27.59, r.total);
+  ok('nor the address', r.address === '830 Boul Charest Est, Quebec, QC G1K 3J7', r.address);
+}
+
 console.log('\n== dates ==');
 ok('ISO', findDate('Date: ' + recent(2)) === recent(2));
 ok('day-first numeric', findDate(dmy(4)) === recent(4), findDate(dmy(4)));

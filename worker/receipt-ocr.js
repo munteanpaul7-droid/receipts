@@ -45,6 +45,7 @@ const RECEIPT_SCHEMA = {
     address:    { type: ['string','null'], description: 'Street address of the business, on one line: street, city, province, postal code. Null if not printed.' },
     phone:      { type: ['string','null'], description: 'Business telephone number as printed. Null if not printed, and never a fax or an order number.' },
     date:       { type: ['string','null'], description: 'Purchase date as YYYY-MM-DD. Resolve 2-digit years and DD/MM vs MM/DD from context.' },
+    time:       { type: ['string','null'], description: 'Time of the transaction as HH:MM on a 24-hour clock. Convert from am/pm. Null if not printed.' },
     total:      { type: ['number','null'], description: 'Final amount actually paid, after tax and tip.' },
     subtotal:   { type: ['number','null'], description: 'Amount before any tax.' },
     federal_tax:    { type: ['number','null'], description: 'GST, HST or TPS in dollars. HST goes here, not in provincial_tax.' },
@@ -57,7 +58,7 @@ const RECEIPT_SCHEMA = {
     confidence: { type: 'string', enum: ['high','medium','low'], description: 'low if the image is blurry, cropped, or not a receipt.' },
     note:       { type: ['string','null'], description: 'One short sentence only if something needs checking by hand. Otherwise null.' }
   },
-  required: ['merchant','address','phone','date','total','subtotal','federal_tax','provincial_tax',
+  required: ['merchant','address','phone','date','time','total','subtotal','federal_tax','provincial_tax',
              'tax_group','category','federal_tax_number','provincial_tax_number',
              'tip','confidence','note']
 };

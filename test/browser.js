@@ -169,7 +169,7 @@ const ok = (n, c, x) => { if (c) { pass++; console.log('  ok   ' + n); } else { 
   await page.waitForTimeout(700);
   await page.evaluate(() => {
     const TEXT = ['RESTAURANT CHEZ ASHTON', '830 Boul Charest Est', 'Quebec, QC  G1K 3J7',
-                  'Tel: (418) 522-3449', '2026-08-23',
+                  'Tel: (418) 522-3449', '2026-08-23  18:42',
                   'SOUS-TOTAL 24.00', 'TPS 1.20', 'TVQ 2.39', 'TOTAL 27.59'].join('\n');
     window.__deleted = false;
     const real = window.fetch;
@@ -194,6 +194,14 @@ const ok = (n, c, x) => { if (c) { pass++; console.log('  ok   ' + n); } else { 
   ok('province set to Quebec', (await page.inputValue('#fTax')) === 'QC', await page.inputValue('#fTax'));
   ok('address filled', (await page.inputValue('#fAddr')) === '830 Boul Charest Est, Quebec, QC G1K 3J7', await page.inputValue('#fAddr'));
   ok('phone filled', (await page.inputValue('#fPhone')) === '(418) 522-3449', await page.inputValue('#fPhone'));
+  ok('time filled', (await page.inputValue('#fTime')) === '18:42', await page.inputValue('#fTime'));
+  ok('time reaches the saved record', await page.evaluate(() => collect().time === '18:42'));
+  ok('known addresses are offered as you type', await page.evaluate(() => {
+    rememberVendor(collect());
+    paintMerchants();
+    const opts = [...document.getElementById('addresses').options].map(o => o.value);
+    return opts.includes('830 Boul Charest Est, Quebec, QC G1K 3J7');
+  }));
   ok('address and phone reach the saved record', await page.evaluate(() => {
     const m = collect();
     return m.addr === '830 Boul Charest Est, Quebec, QC G1K 3J7' && m.phone === '(418) 522-3449';
