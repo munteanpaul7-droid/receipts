@@ -8,13 +8,7 @@ echo "--- syntax ---"
 for f in app.js sw.js worker/receipt-ocr.js; do node --check "$f" && echo "ok   $f"; done
 
 echo "\n--- every element app.js reaches for exists in index.html ---"
-node -e '
-const fs = require("fs");
-const used = new Set([...fs.readFileSync("app.js","utf8").matchAll(/\$(?:opt)?\(.([A-Za-z0-9_-]+).\)/g)].map(m=>m[1]));
-const have = new Set([...fs.readFileSync("index.html","utf8").matchAll(/id="([A-Za-z0-9_-]+)"/g)].map(m=>m[1]));
-const missing = [...used].filter(id => !have.has(id));
-if (missing.length) { console.log("FAIL missing ids: " + missing.join(", ")); process.exit(1); }
-console.log("ok   all " + used.size + " ids present");'
+node test/check-ids.js
 
 echo "\n--- receipt parser ---";              node test/receipt-parser.js
 echo "\n--- drive ocr ---";                    node test/drive-ocr.js

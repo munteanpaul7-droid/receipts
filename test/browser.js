@@ -286,6 +286,32 @@ const ok = (n, c, x) => { if (c) { pass++; console.log('  ok   ' + n); } else { 
     return document.getElementById('fAddr').value === 'MY OWN ADDRESS';
   }));
 
+  console.log('\n== typing an address suggests addresses ==');
+  await page.evaluate(() => {
+    ['fName','fAddr','fPhone'].forEach(id => document.getElementById(id).value = '');
+    const real = window.fetch;
+    window.fetch = (u, o) => {
+      if (String(u).includes('photon')) {
+        return Promise.resolve(new Response(JSON.stringify({ features: [
+          { properties: { name: 'Restaurant Chez Ashton', housenumber: '830',
+                          street: 'Boulevard Charest Est', city: 'Quebec', postcode: 'G1K 3J7' } }
+        ] }), { status: 200 }));
+      }
+      return real(u, o);
+    };
+  });
+  await page.click('#fAddr');
+  await page.type('#fAddr', '830 charest', { delay: 30 });
+  await page.waitForTimeout(1200);
+  ok('an address is suggested', await page.isVisible('#addrSuggBox .nm'), await page.textContent('#addrSuggBox'));
+  ok('the address reads first, not the shop', /^830 Boulevard Charest Est/.test(await page.textContent('#addrSuggBox .nm')),
+     await page.textContent('#addrSuggBox .nm'));
+  await page.click('#addrSuggBox button');
+  await page.waitForTimeout(300);
+  ok('tapping it fills the address box', /830 Boulevard Charest Est/.test(await page.inputValue('#fAddr')), await page.inputValue('#fAddr'));
+  ok('and leaves the merchant box alone', (await page.inputValue('#fName')) === '', await page.inputValue('#fName'));
+  ok('the list closes', !(await page.isVisible('#addrSuggBox .nm')));
+
   console.log('\n== the calendar button on the return part ==');
   await page.evaluate(() => {
     localStorage.setItem('rc_cfg_remind', JSON.stringify('1'));

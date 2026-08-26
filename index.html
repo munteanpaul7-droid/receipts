@@ -103,6 +103,7 @@
       <label for="fAddr">Address</label>
       <input type="text" id="fAddr" list="addresses" placeholder="e.g. 830 Boul Charest E, Quebec QC G1K 3J7" autocomplete="street-address" autocapitalize="words">
       <datalist id="addresses"></datalist>
+      <div class="sugg hide" id="addrSuggBox"></div>
     </div>
 
     <div class="f">
@@ -262,7 +263,7 @@
   <h3>Business lookup</h3>
   <div class="card">
     <div class="f">
-      <label for="sLookup">Suggest business names as you type</label>
+      <label for="sLookup">Suggest business names and addresses as you type</label>
       <select id="sLookup">
         <option value="off">Off &mdash; only shops I have filed before</option>
         <option value="osm">OpenStreetMap &mdash; free, no account, no card</option>
