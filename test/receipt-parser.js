@@ -222,6 +222,33 @@ console.log('\n== money handed over is not the amount spent ==');
   ok('and in English too', e.total === 8.70, e.total);
 }
 
+console.log('\n== a heading the till printed is not the shop ==');
+{
+  /* Card terminals print TRANSACTION RECORD above the business name. Taking
+     the first line outright filed every such receipt under the heading. */
+  const name = (lines) => parseReceiptText(lines.concat(['TOTAL 10.00']).join('\n')).merchant;
+  ok('TRANSACTION RECORD', name(['TRANSACTION RECORD', 'RESTAURANT CHEZ ASHTON']) === 'RESTAURANT CHEZ ASHTON',
+     name(['TRANSACTION RECORD', 'RESTAURANT CHEZ ASHTON']));
+  ok('SALES RECEIPT', name(['SALES RECEIPT', 'QUINCAILLERIE ROY']) === 'QUINCAILLERIE ROY', name(['SALES RECEIPT', 'QUINCAILLERIE ROY']));
+  ok('CUSTOMER COPY', name(['CUSTOMER COPY', 'DEPANNEUR DU COIN']) === 'DEPANNEUR DU COIN', name(['CUSTOMER COPY', 'DEPANNEUR DU COIN']));
+  ok('MERCHANT COPY', name(['MERCHANT COPY', 'SAQ SELECTION']) === 'SAQ SELECTION', name(['MERCHANT COPY', 'SAQ SELECTION']));
+  ok('DUPLICATA', name(['DUPLICATA', 'PHARMAPRIX']) === 'PHARMAPRIX', name(['DUPLICATA', 'PHARMAPRIX']));
+  ok('RELEVE DE TRANSACTION', name(['RELEVE DE TRANSACTION', 'METRO PLUS']) === 'METRO PLUS', name(['RELEVE DE TRANSACTION', 'METRO PLUS']));
+  ok('two headings stacked', name(['TRANSACTION RECORD', 'TRANSACTION DETAIL', 'LE PARFAIT CAFE']) === 'LE PARFAIT CAFE',
+     name(['TRANSACTION RECORD', 'TRANSACTION DETAIL', 'LE PARFAIT CAFE']));
+  ok('a receipt with no heading is untouched', name(['LE PARFAIT CAFE']) === 'LE PARFAIT CAFE', name(['LE PARFAIT CAFE']));
+}
+
+console.log('\n== the address is read from below the real name, not the heading ==');
+{
+  const r = parseReceiptText([
+    'TRANSACTION RECORD', 'RESTAURANT CHEZ ASHTON',
+    '830 Boul Charest Est', 'Quebec, QC  G1K 3J7', 'TOTAL 27.59'
+  ].join('\n'));
+  ok('name', r.merchant === 'RESTAURANT CHEZ ASHTON', r.merchant);
+  ok('address follows the name, not the heading', r.address === '830 Boul Charest Est, Quebec, QC G1K 3J7', r.address);
+}
+
 console.log('\n== the business name, address and phone ==');
 {
   const r = parseReceiptText([

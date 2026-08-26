@@ -96,7 +96,7 @@ const DEFAULTS = {
 /* Bumped whenever app.js, index.html or styles.css change. Shown in Settings
    so "did the update actually land" is a question you can answer from the
    phone, and used by the service worker to name its cache. */
-const APP_VERSION = '2026-08-26.4';
+const APP_VERSION = '2026-08-26.5';
 
 /* ------------------------------------------------------------- utilities */
 
@@ -1387,7 +1387,24 @@ function findTerms(lines) {
 
 /* The shop name is nearly always the first real line. Skip the noise a
    till prints above it and anything that is mostly digits. */
-const NAME_NOISE = /^(?:re[çc]u|receipt|facture|invoice|copie|copy|client|merchant|marchand|bienvenue|welcome|thank|merci|bon\s|tel|t[ée]l|fax|www\.|http|no\.?\s*\d|#\d|caisse|term|terminal|date|heure|time)/i;
+/* Headings a till prints above the shop's own name. "TRANSACTION RECORD" is
+   the common one on card terminals — the business is on the line after it, so
+   taking the first line outright would file every such receipt under the
+   heading rather than the shop. */
+const NAME_NOISE = new RegExp('^(?:' + [
+  /* what the piece of paper calls itself */
+  're[çc]u', 'receipt', 'facture', 'invoice', 'bordereau', 'relev[ée]',
+  'transaction', 'record', 'sales\\s+(?:receipt|slip|draft)', 'sale\\b',
+  'detail', 'd[ée]tail', 'summary', 'sommaire', 'statement',
+  /* who the copy is for, and whether it is one */
+  'copie', 'copy', 'client', 'customer', 'merchant', 'marchand',
+  'duplicata', 'duplicate', 'reprint', 'r[ée]impression', 'original',
+  /* pleasantries and machine chatter */
+  'bienvenue', 'welcome', 'thank', 'merci', 'bon\\s',
+  'tel', 't[ée]l', 'fax', 'www\\.', 'http',
+  'no\\.?\\s*\\d', '#\\d', 'caisse', 'term', 'terminal',
+  'date', 'heure', 'time'
+].join('|') + ')', 'i');
 
 /* Which line the shop name is on. The address is whatever sits directly
    beneath it, so the two searches share this. -1 when nothing qualifies. */
