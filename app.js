@@ -96,7 +96,7 @@ const DEFAULTS = {
 /* Bumped whenever app.js, index.html or styles.css change. Shown in Settings
    so "did the update actually land" is a question you can answer from the
    phone, and used by the service worker to name its cache. */
-const APP_VERSION = '2026-08-26.3';
+const APP_VERSION = '2026-08-26.4';
 
 /* ------------------------------------------------------------- utilities */
 
@@ -539,6 +539,45 @@ async function lookupGoogle(q) {
   })).filter((p) => p.name);
 }
 
+/* The same two sources, asked for a street address rather than a business.
+   Photon is better at this than at shop names — addresses are the thing
+   OpenStreetMap has most of. Canada Post's own finder is the authority on
+   Canadian addresses, but it is a paid product with no free tier, so this is
+   the closest thing that costs nothing. */
+async function lookupAddrOSM(q) {
+  const url = 'https://photon.komoot.io/api/?limit=6&bbox=' + CA_BBOX +
+              '&q=' + encodeURIComponent(q);
+  const res = await fetchWithTimeout(url, { headers: { Accept: 'application/json' } }, 8000);
+  if (!res.ok) throw new Error('osm-' + res.status);
+  const d = await res.json();
+  return (d.features || [])
+    .map((f) => {
+      const p = f.properties || {};
+      const street = [p.housenumber, p.street].filter(Boolean).join(' ');
+      const where = [p.city || p.county, p.state, p.postcode].filter(Boolean).join(', ');
+      const addr = [street, where].filter(Boolean).join(', ');
+      return { address: addr, name: p.name || '' };
+    })
+    /* Something with no street in it is a city or a park, not an address. */
+    .filter((p) => p.address && /\d|\w+\s\w+/.test(p.address))
+    .filter((p, i, all) => all.findIndex((x) => x.address === p.address) === i);
+}
+
+async function lookupAddrGoogle(q) {
+  const places = await lookupGoogle(q);
+  return places
+    .filter((p) => p.address)
+    .map((p) => ({ address: p.address, name: p.name }))
+    .filter((p, i, all) => all.findIndex((x) => x.address === p.address) === i);
+}
+
+function lookupAddresses(q) {
+  const mode = lookupMode();
+  if (mode === 'osm') return lookupAddrOSM(q);
+  if (mode === 'google') return lookupAddrGoogle(q);
+  return Promise.resolve([]);
+}
+
 function lookupPlaces(q) {
   const mode = lookupMode();
   if (mode === 'osm') return lookupOSM(q);
@@ -884,8 +923,27 @@ function noteScanFail(info) {
 /* Draws whatever the lookup came back with. Tapping one fills the boxes it
    knows and leaves the rest alone, and nothing here ever overwrites a value
    already typed — the suggestion is a shortcut, not an authority. */
-function paintSuggestions(list, msg) {
-  const box = $opt('suggBox');
+function paintSuggestions(list, msg) { renderSuggestions('suggBox', list, msg, fillFromPlace); }
+function paintAddrSuggestions(list, msg) { renderSuggestions('addrSuggBox', list, msg, fillFromAddress); }
+
+/* Tapping a business fills the name, and the address and phone only where
+   those are still empty. */
+function fillFromPlace(p) {
+  $('fName').value = p.name;
+  if (p.address && !$('fAddr').value.trim()) $('fAddr').value = p.address;
+  if (p.phone && !$('fPhone').value.trim()) $('fPhone').value = p.phone;
+  /* Filling the name is exactly what the remembered-merchant lookup listens
+     for, so let it do its half too. */
+  $('fName').dispatchEvent(new Event('change'));
+}
+
+/* Tapping an address fills only the address. You were typing that box. */
+function fillFromAddress(p) {
+  $('fAddr').value = p.address;
+}
+
+function renderSuggestions(boxId, list, msg, onPick) {
+  const box = $opt(boxId);
   if (!box.appendChild) return;
   box.innerHTML = '';
   if (msg) {
@@ -901,24 +959,25 @@ function paintSuggestions(list, msg) {
   list.slice(0, 6).forEach((p) => {
     const b = document.createElement('button');
     b.type = 'button';
+    /* Whichever of the two the box is for reads first; the other, if there
+       is one, sits underneath as the thing that tells two apart. */
+    const lead = boxId === 'addrSuggBox' ? p.address : p.name;
+    const under = boxId === 'addrSuggBox'
+      ? (p.name || '')
+      : (p.address || '') + (p.phone ? ' · ' + p.phone : '');
     const nm = document.createElement('span');
     nm.className = 'nm';
-    nm.textContent = p.name;
+    nm.textContent = lead;
     b.appendChild(nm);
-    if (p.address) {
+    if (under) {
       const ad = document.createElement('span');
       ad.className = 'ad';
-      ad.textContent = p.address + (p.phone ? ' · ' + p.phone : '');
+      ad.textContent = under;
       b.appendChild(ad);
     }
     b.addEventListener('click', () => {
-      $('fName').value = p.name;
-      if (p.address && !$('fAddr').value.trim()) $('fAddr').value = p.address;
-      if (p.phone && !$('fPhone').value.trim()) $('fPhone').value = p.phone;
-      paintSuggestions([]);
-      /* Filling the name is exactly what the remembered-merchant lookup
-         listens for, so let it do its half too. */
-      $('fName').dispatchEvent(new Event('change'));
+      onPick(p);
+      renderSuggestions(boxId, []);
     });
     box.appendChild(b);
   });
@@ -931,9 +990,9 @@ function paintLookup() {
   $opt('googleOnly').className = 'f' + (mode === 'google' ? '' : ' hide');
   $opt('keyOrigin').textContent = location.origin;
   $opt('lookupHint').textContent =
-    mode === 'osm' ? 'Free, and nothing to set up. Coverage of small shops is thinner than Google’s — it is only as good as whoever last surveyed that street.'
+    mode === 'osm' ? 'Free, and nothing to set up. Better at addresses than at shop names — coverage of small businesses is only as good as whoever last surveyed that street.'
   : mode === 'google' ? 'Knows almost every business and returns a phone number too. Needs a key, and Google will not issue one without a billing account.'
-  : 'Only shops you have filed before are offered. Nothing is looked up, and nothing is sent anywhere.';
+  : 'Only shops and addresses you have filed before are offered. Nothing is looked up, and nothing is sent anywhere.';
 }
 
 function paintRemind() {
@@ -2373,9 +2432,39 @@ function boot() {
     setTimeout(() => paintSuggestions([]), 200);
   });
 
+  /* The address box gets the same treatment. Three ways to fill it now — the
+     receipt itself, an address filed before, and this — so typing one out in
+     full should be the rarest of them. */
+  let addrTimer = null, addrSeq = 0;
+  $('fAddr').addEventListener('input', () => {
+    const q = $('fAddr').value.trim();
+    clearTimeout(addrTimer);
+    if (lookupMode() === 'off' || q.length < LOOKUP_MIN) { paintAddrSuggestions([]); return; }
+    addrTimer = setTimeout(async () => {
+      const mine = ++addrSeq;
+      try {
+        const list = await lookupAddresses(q);
+        if (mine !== addrSeq) return;
+        paintAddrSuggestions(list);
+      } catch (e) {
+        if (mine !== addrSeq) return;
+        const m = String(e.message || e);
+        paintAddrSuggestions(null,
+          m === 'no-key' ? 'No Google key set — add one in Settings, or switch to OpenStreetMap.'
+          : m === 'bad-key' ? 'Google refused that key. Check it is enabled and restricted to this address.'
+          : 'Could not reach the lookup service. Type the address in.');
+      }
+    }, LOOKUP_PAUSE);
+  });
+
+  $('fAddr').addEventListener('blur', () => {
+    setTimeout(() => paintAddrSuggestions([]), 200);
+  });
+
   $opt('sLookup').addEventListener('change', () => {
     setCfg('lookup', $opt('sLookup').value);
     paintSuggestions([]);
+    paintAddrSuggestions([]);
     paintLookup();
   });
 

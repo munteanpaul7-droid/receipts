@@ -219,8 +219,18 @@ what makes a charge impossible rather than merely unlikely. The app helps by
 waiting for you to stop typing before it asks anything, and by requesting only
 the three fields it can actually use.
 
-Tapping a suggestion fills the name, and the address and phone if those boxes
-are still empty — anything you typed is never overwritten.
+**The address box suggests too.** Start typing a street and it offers real
+addresses, so you rarely have to type one out in full. Canada Post's own finder
+is the authority on Canadian addresses, but it is a paid product with no free
+tier; OpenStreetMap is the closest thing that costs nothing, and it is better at
+addresses than it is at shop names.
+
+Tapping a business suggestion fills the name, and the address and phone if those
+boxes are still empty. Tapping an address suggestion fills only the address —
+you were typing that box. Anything you typed is never overwritten.
+
+There are now three ways that box gets filled: off the receipt, from an address
+you have filed before, and from this. Typing one out should be the rarest.
 
 ## Google Drive stays connected
 

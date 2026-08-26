@@ -98,12 +98,37 @@ console.log('\n== Settings shows the key box only for Google ==');
   c._ls.setItem('rc_cfg_lookup', JSON.stringify('osm'));
   c.paintLookup();
   ok('OSM needs no key box', /hide/.test(c._els.googleOnly.className), c._els.googleOnly.className);
-  ok('and the hint is honest about coverage', /thinner/i.test(c._els.lookupHint.textContent), c._els.lookupHint.textContent);
+  ok('and the hint is honest about coverage', /only as good as/i.test(c._els.lookupHint.textContent), c._els.lookupHint.textContent);
+  ok('and says it is better at addresses', /addresses/i.test(c._els.lookupHint.textContent), c._els.lookupHint.textContent);
 
   c._ls.setItem('rc_cfg_lookup', JSON.stringify('google'));
   c.paintLookup();
   ok('Google shows the key box', !/hide/.test(c._els.googleOnly.className), c._els.googleOnly.className);
   ok('and warns about the billing account', /billing account/i.test(c._els.lookupHint.textContent), c._els.lookupHint.textContent);
+}
+
+console.log('\n== typing an address gets addresses, not businesses ==');
+{
+  const c = env('osm', OSM);
+  const r = await c.lookupAddresses('830 charest');
+  ok('the address leads', r[0].address === '830 Boulevard Charest Est, Québec, Quebec, G1K 3J7', r[0]);
+  ok('the business name comes along for context', r[0].name === 'Restaurant Chez Ashton', r[0].name);
+  ok('a place with no street is not an address', r.every((p) => p.address), r);
+  ok('identical addresses collapse', new Set(r.map((p) => p.address)).size === r.length, r.map((p) => p.address));
+}
+
+console.log('\n== address lookup respects the same switch ==');
+{
+  const off = env(null, OSM);
+  const r = await off.lookupAddresses('830 charest');
+  ok('off returns nothing', r.length === 0, r);
+  ok('and contacts nobody', off.calls.length === 0, off.calls);
+
+  const g = env('google', GOOG);
+  let err = null;
+  try { await g.lookupAddresses('830 charest'); } catch (e) { err = e.message; }
+  ok('Google without a key still refuses', err === 'no-key', err);
+  ok('and sends nothing', g.calls.length === 0, g.calls);
 }
 
 console.log('\n' + (fail ? 'FAILED ' + fail : 'all ' + pass + ' passed'));
