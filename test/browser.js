@@ -242,6 +242,119 @@ const ok = (n, c, x) => { if (c) { pass++; console.log('  ok   ' + n); } else { 
   ok('temp doc deleted', await page.evaluate(() => window.__pdfDeleted));
   await page.screenshot({ path: '/tmp/receipts-shot-pdf.png' });
 
+  console.log('\n== business-name suggestions ==');
+  await page.evaluate(() => {
+    localStorage.setItem('rc_cfg_lookup', JSON.stringify('osm'));
+    ['fName','fAddr','fPhone'].forEach(id => document.getElementById(id).value = '');
+  });
+  await page.reload({ waitUntil: 'load' });
+  await page.waitForTimeout(600);
+  await page.evaluate(() => {
+    const real = window.fetch;
+    window.__looked = 0;
+    window.fetch = (u, o) => {
+      if (String(u).includes('photon')) {
+        window.__looked++;
+        return Promise.resolve(new Response(JSON.stringify({ features: [
+          { properties: { name: 'Restaurant Chez Ashton', housenumber: '830',
+                          street: 'Boulevard Charest Est', city: 'Quebec', postcode: 'G1K 3J7' } }
+        ] }), { status: 200 }));
+      }
+      return real(u, o);
+    };
+  });
+  await page.click('#fName');
+  await page.type('#fName', 'chez ash', { delay: 30 });
+  await page.waitForTimeout(1200);
+  ok('a suggestion appears', await page.isVisible('#suggBox .nm'), await page.textContent('#suggBox'));
+  ok('typing was debounced into one lookup', await page.evaluate(() => window.__looked) === 1,
+     await page.evaluate(() => window.__looked));
+  await page.click('#suggBox button');
+  await page.waitForTimeout(300);
+  ok('tapping it fills the name', (await page.inputValue('#fName')) === 'Restaurant Chez Ashton', await page.inputValue('#fName'));
+  ok('and the address', /830 Boulevard Charest Est/.test(await page.inputValue('#fAddr')), await page.inputValue('#fAddr'));
+  ok('the list closes again', !(await page.isVisible('#suggBox .nm')));
+
+  ok('a typed address is never overwritten', await page.evaluate(async () => {
+    document.getElementById('fName').value = '';
+    document.getElementById('fAddr').value = 'MY OWN ADDRESS';
+    const inp = document.getElementById('fName');
+    inp.value = 'chez ash';
+    inp.dispatchEvent(new Event('input'));
+    await new Promise(r => setTimeout(r, 1000));
+    document.querySelector('#suggBox button').click();
+    return document.getElementById('fAddr').value === 'MY OWN ADDRESS';
+  }));
+
+  console.log('\n== the calendar button on the return part ==');
+  await page.evaluate(() => {
+    localStorage.setItem('rc_cfg_remind', JSON.stringify('1'));
+    localStorage.setItem('rc_cfg_remindDays', JSON.stringify('3'));
+    localStorage.setItem('rc_tok', JSON.stringify('fake'));
+    localStorage.setItem('rc_tokExp', JSON.stringify(Date.now() + 3600000));
+    localStorage.setItem('rc_granted', JSON.stringify(true));
+  });
+  await page.reload({ waitUntil: 'load' });
+  await page.waitForTimeout(600);
+
+  ok('hidden while there is no return date', !(await page.isVisible('#calBtn')));
+
+  await page.evaluate(() => {
+    document.getElementById('fName').value = 'Canadian Tire';
+    document.getElementById('fTotal').value = '62.13';
+    document.getElementById('fRefund').value = '62.13';
+    const d = document.getElementById('fReturnBy');
+    d.value = '2026-09-23';
+    d.dispatchEvent(new Event('change'));
+  });
+  await page.waitForTimeout(200);
+  ok('appears once a return date is set', await page.isVisible('#calBtn'));
+  ok('and is labelled plainly', (await page.textContent('#calBtn')).trim() === 'Add return date to your calendar',
+     await page.textContent('#calBtn'));
+  ok('and is green, like Save', await page.evaluate(() => {
+    const c = getComputedStyle(document.getElementById('calBtn')).backgroundColor;
+    const m = c.match(/\d+/g).map(Number);
+    return m[1] > m[0] && m[1] > m[2];   // more green than red or blue
+  }), await page.evaluate(() => getComputedStyle(document.getElementById('calBtn')).backgroundColor));
+  ok('the days left are spelled out', /day/.test(await page.textContent('#returnNote')), await page.textContent('#returnNote'));
+
+  await page.evaluate(() => {
+    window.__cal = null;
+    const real = window.fetch;
+    window.fetch = (u, o) => {
+      if (String(u).includes('calendar/v3')) {
+        window.__cal = JSON.parse(o.body);
+        return Promise.resolve(new Response(JSON.stringify({ id: 'ev1' }), { status: 200 }));
+      }
+      return real(u, o);
+    };
+  });
+  await page.click('#calBtn');
+  await page.waitForTimeout(700);
+  const ev = await page.evaluate(() => window.__cal);
+  ok('tapping it creates the event', !!ev, ev);
+  ok('three days before the deadline', ev && ev.start.date === '2026-09-20', ev && ev.start);
+  ok('naming the shop and the date', ev && /Canadian Tire/.test(ev.summary) && /2026-09-23/.test(ev.summary), ev && ev.summary);
+  ok('and asking keep or return, for how much', ev && /Keep it, or take it back/.test(ev.description) && /\$62\.13/.test(ev.description), ev && ev.description);
+
+  console.log('\n== the connection notice announces and withdraws ==');
+  ok('a lapse shows the red notice, then takes it away', await page.evaluate(async () => {
+    const el = document.getElementById('offWarn');
+    localStorage.setItem('rc_granted', JSON.stringify(true));
+    tokenExp = Date.now() + 3600000; accessToken = 'fake';
+    paintStatus();                       // seen as connected
+    tokenExp = 0;                        // the sign-in lapses
+    paintStatus();
+    const shown = !el.className.includes('hide');
+    await new Promise(r => setTimeout(r, 3300));
+    const fading = el.className.includes('fade');
+    await new Promise(r => setTimeout(r, 800));
+    const gone = el.className.includes('hide');
+    return shown && fading && gone;
+  }));
+  ok('the dot is what stays', await page.evaluate(() =>
+    !document.getElementById('dot').className.includes('on')));
+
   console.log('\n== the service worker registers and serves the shell ==');
   const sw = await page.evaluate(async () => {
     const r = await navigator.serviceWorker.getRegistration();

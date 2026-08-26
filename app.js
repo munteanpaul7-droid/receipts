@@ -80,6 +80,8 @@ const DEFAULTS = {
   struct: 'ym',
   taxGroup: 'QC',
   aiUrl: '',
+  lookup: 'off',
+  placesKey: '',
   remind: '0',
   remindDays: '3',
   /* Google Drive reads receipts for nothing and needs no setting up, so it
@@ -94,7 +96,7 @@ const DEFAULTS = {
 /* Bumped whenever app.js, index.html or styles.css change. Shown in Settings
    so "did the update actually land" is a question you can answer from the
    phone, and used by the service worker to name its cache. */
-const APP_VERSION = '2026-08-26.1';
+const APP_VERSION = '2026-08-26.3';
 
 /* ------------------------------------------------------------- utilities */
 
@@ -170,7 +172,7 @@ function toast(msg, kind) {
   t.textContent = msg;
   t.className = 'toast show' + (kind ? ' ' + kind : '');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.className = 'toast' + (kind ? ' ' + kind : ''); }, 4200);
+  toastTimer = setTimeout(() => { t.className = 'toast' + (kind ? ' ' + kind : ''); }, 3000);
 }
 
 /* --------------------------------------------------------- Google OAuth  */
@@ -453,6 +455,97 @@ async function addReturnReminder(m) {
   return res.json();
 }
 
+/* ------------------------------------- looking a business up by name
+
+   Typing "chez ash" and being offered "Restaurant Chez Ashton" with its
+   address saves more keystrokes than anything else on this form. Two ways
+   to do it, and the difference between them is a credit card:
+
+   OpenStreetMap costs nothing and needs no account, no key and no card. Its
+   coverage of small shops is thinner than Google's, and the data is only as
+   good as whoever last surveyed that street — but it is free in the sense
+   that word usually is not.
+
+   Google Places knows almost every business and returns a phone number as
+   well, but Google will not issue a key without a billing account, and a key
+   shipped in a static site is public no matter how it is restricted. Anyone
+   choosing this should cap the daily quota in the Cloud Console so that
+   overage is impossible rather than merely unlikely.
+
+   Neither runs unless chosen. Off is the default, and off calls nobody.   */
+
+const LOOKUP_MIN = 3;        // shorter than this is not a search
+const LOOKUP_PAUSE = 450;    // wait for typing to stop, not for every letter
+/* Canada, roughly. Biasing the search beats filtering the results. */
+const CA_BBOX = '-141.0,41.6,-52.6,83.2';
+
+function lookupMode() { return cfg('lookup') || 'off'; }
+
+/* One shape for both sources, so the rest of the app cannot tell them apart. */
+function osmPlace(f) {
+  const p = f.properties || {};
+  const street = [p.housenumber, p.street || p.name].filter(Boolean).join(' ');
+  const where = [p.city || p.county, p.state, p.postcode].filter(Boolean).join(', ');
+  return {
+    /* Only a named place is a business. A bare street would otherwise be
+       offered as one, with the road itself as the shop. */
+    name: p.name || '',
+    address: [street, where].filter(Boolean).join(', '),
+    phone: ''
+  };
+}
+
+async function lookupOSM(q) {
+  const url = 'https://photon.komoot.io/api/?limit=6&bbox=' + CA_BBOX +
+              '&q=' + encodeURIComponent(q);
+  const res = await fetchWithTimeout(url, { headers: { Accept: 'application/json' } }, 8000);
+  if (!res.ok) throw new Error('osm-' + res.status);
+  const d = await res.json();
+  return (d.features || [])
+    .map(osmPlace)
+    .filter((p) => p.name)
+    /* Two branches of the same chain are two answers, not one — the address
+       under each is what tells them apart, so only an exact repeat is a
+       duplicate. */
+    .filter((p, i, all) => all.findIndex((x) => x.name === p.name && x.address === p.address) === i);
+}
+
+async function lookupGoogle(q) {
+  const key = cfg('placesKey');
+  if (!key) throw new Error('no-key');
+  const res = await fetchWithTimeout('https://places.googleapis.com/v1/places:searchText', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': key,
+      /* Asking for three fields rather than everything keeps this in the
+         cheapest tier Google bills, and they are the three we can use. */
+      'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.nationalPhoneNumber'
+    },
+    body: JSON.stringify({
+      textQuery: q,
+      regionCode: 'CA',
+      maxResultCount: 6,
+      languageCode: 'en'
+    })
+  }, 8000);
+  if (res.status === 403 || res.status === 401) throw new Error('bad-key');
+  if (!res.ok) throw new Error('google-' + res.status);
+  const d = await res.json();
+  return (d.places || []).map((p) => ({
+    name: (p.displayName && p.displayName.text) || '',
+    address: p.formattedAddress || '',
+    phone: p.nationalPhoneNumber || ''
+  })).filter((p) => p.name);
+}
+
+function lookupPlaces(q) {
+  const mode = lookupMode();
+  if (mode === 'osm') return lookupOSM(q);
+  if (mode === 'google') return lookupGoogle(q);
+  return Promise.resolve([]);
+}
+
 /* -------------------------------------------------- offline upload queue */
 
 function idb() {
@@ -535,6 +628,27 @@ let catTouched = false; // once you pick a category yourself, the scan leaves it
 
 /* ---------------------------------------------------------------- render */
 
+/* null until the first look, so opening the app already connected does not
+   announce something that did not just happen. */
+let wasConnected = null;
+let offlineTimer = null;
+
+function hideOffline() {
+  clearTimeout(offlineTimer);
+  const el = $opt('offWarn');
+  if (el.className !== undefined) el.className = 'banner bad hide';
+}
+
+function flashOffline() {
+  const el = $opt('offWarn');
+  clearTimeout(offlineTimer);
+  el.className = 'banner bad';
+  offlineTimer = setTimeout(() => {
+    el.className = 'banner bad fade';
+    offlineTimer = setTimeout(() => { el.className = 'banner bad hide'; }, 600);
+  }, 3000);
+}
+
 function paintStatus() {
   const ok = connected();
   $('dot').className = 'dot' + (ok ? ' on' : '');
@@ -542,19 +656,23 @@ function paintStatus() {
     : (cfg('clientId') ? 'Client ID saved. Tap Connect Drive.' : 'Not connected');
   $('setupWarn').className = 'banner' + (cfg('clientId') ? ' hide' : '');
 
-  /* A dot in the corner is easy to miss, and a receipt filed believing it
-     reached Drive when it did not is the failure that matters here. While
-     the connection is down it is said in red, on the screen you are already
-     looking at — and the reason is stated, because "sign-in lapsed" and
-     "never set up" call for different things. */
-  const off = $opt('offWarn');
+  /* The connection is watched continuously, and each change is announced
+     once and then withdrawn — three seconds, then a fade. A banner that sits
+     there permanently stops being read, and the dot beside the title is the
+     thing that stays if you want to check. */
   const settingUp = !cfg('clientId') || !S.get('granted', false);
-  off.className = 'banner bad' + (ok || settingUp ? ' hide' : '');
-  if (!ok && !settingUp) {
-    $opt('offWhy').textContent = navigator.onLine
-      ? 'The Google sign-in has lapsed. Receipts are kept on this phone and upload as soon as it is back.'
-      : 'No connection at the moment. Receipts are kept on this phone and upload by themselves later.';
+  if (!settingUp && ok !== wasConnected) {
+    if (ok) {
+      if (wasConnected !== null) toast('Connected to Google Drive.', 'good');
+    } else {
+      $opt('offWhy').textContent = navigator.onLine
+        ? 'The Google sign-in has lapsed. Receipts are kept on this phone and upload as soon as it is back.'
+        : 'No connection at the moment. Receipts are kept on this phone and upload by themselves later.';
+      flashOffline();
+    }
   }
+  if (!settingUp) wasConnected = ok;
+  if (ok || settingUp) hideOffline();
   const rid = S.get('rootId', null);
   $('folderInfo').textContent = rid
     ? 'Drive folder ready: "' + cfg('root') + '" (the app only sees files it created).'
@@ -761,6 +879,61 @@ function noteScanFail(info) {
     until: fails >= SCAN_FAIL_LIMIT ? Date.now() + SCAN_COOLDOWN_MS : 0,
     code: info.code, msg: info.msg, fix: info.fix
   });
+}
+
+/* Draws whatever the lookup came back with. Tapping one fills the boxes it
+   knows and leaves the rest alone, and nothing here ever overwrites a value
+   already typed — the suggestion is a shortcut, not an authority. */
+function paintSuggestions(list, msg) {
+  const box = $opt('suggBox');
+  if (!box.appendChild) return;
+  box.innerHTML = '';
+  if (msg) {
+    const d = document.createElement('div');
+    d.className = 'msg';
+    d.textContent = msg;
+    box.appendChild(d);
+    box.className = 'sugg';
+    return;
+  }
+  if (!list || !list.length) { box.className = 'sugg hide'; return; }
+
+  list.slice(0, 6).forEach((p) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    const nm = document.createElement('span');
+    nm.className = 'nm';
+    nm.textContent = p.name;
+    b.appendChild(nm);
+    if (p.address) {
+      const ad = document.createElement('span');
+      ad.className = 'ad';
+      ad.textContent = p.address + (p.phone ? ' · ' + p.phone : '');
+      b.appendChild(ad);
+    }
+    b.addEventListener('click', () => {
+      $('fName').value = p.name;
+      if (p.address && !$('fAddr').value.trim()) $('fAddr').value = p.address;
+      if (p.phone && !$('fPhone').value.trim()) $('fPhone').value = p.phone;
+      paintSuggestions([]);
+      /* Filling the name is exactly what the remembered-merchant lookup
+         listens for, so let it do its half too. */
+      $('fName').dispatchEvent(new Event('change'));
+    });
+    box.appendChild(b);
+  });
+  box.className = 'sugg';
+}
+
+function paintLookup() {
+  const mode = lookupMode();
+  $opt('sLookup').value = mode;
+  $opt('googleOnly').className = 'f' + (mode === 'google' ? '' : ' hide');
+  $opt('keyOrigin').textContent = location.origin;
+  $opt('lookupHint').textContent =
+    mode === 'osm' ? 'Free, and nothing to set up. Coverage of small shops is thinner than Google’s — it is only as good as whoever last surveyed that street.'
+  : mode === 'google' ? 'Knows almost every business and returns a phone number too. Needs a key, and Google will not issue one without a billing account.'
+  : 'Only shops you have filed before are offered. Nothing is looked up, and nothing is sent anywhere.';
 }
 
 function paintRemind() {
@@ -1588,7 +1761,7 @@ function paintReturn() {
   const cal = $opt('calBtn');
   if (!by) {
     note.textContent = 'No return window was found on the receipt. Fill it in if the shop gave you one.';
-    cal.className = 'chip hide';
+    cal.className = 'chip go hide';
     return;
   }
   const days = Math.round((Date.parse(by + 'T12:00:00Z') - Date.now()) / 86400000);
@@ -1597,7 +1770,7 @@ function paintReturn() {
     days < 0 ? 'That return window closed ' + Math.abs(days) + ' day' + (Math.abs(days) === 1 ? '' : 's') + ' ago.'
     : days === 0 ? 'Today is the last day to take it back' + money + '.'
     : 'You have ' + days + ' day' + (days === 1 ? '' : 's') + ' left to take it back' + money + '.';
-  cal.className = 'chip';
+  cal.className = 'chip go';
 }
 
 function money0(v) { return money(num(v)); }
@@ -1969,6 +2142,8 @@ function boot() {
   $('sAi').value = cfg('aiUrl');
   $('sAuto').value = cfg('autoScan');
   $opt('sReader').value = readerMode();
+  $opt('sLookup').value = lookupMode();
+  $opt('sPlacesKey').value = cfg('placesKey');
   $opt('sRemind').value = cfg('remind');
   $opt('sRemindDays').value = cfg('remindDays');
   $('sOrigin').value = location.origin;
@@ -2069,6 +2244,8 @@ function boot() {
     /* Pointing at a different Worker makes the old failures meaningless. */
     if (prevAi !== cfg('aiUrl')) noteScanOk();
     setCfg('reader', $opt('sReader').value);
+    setCfg('lookup', $opt('sLookup').value);
+    setCfg('placesKey', $opt('sPlacesKey').value.trim());
     setCfg('remind', $opt('sRemind').value);
     setCfg('remindDays', $opt('sRemindDays').value);
     setCfg('autoScan', $('sAuto').value);
@@ -2081,6 +2258,7 @@ function boot() {
     paintStatus();
     paintReaderMode();
     paintScannerState();
+    paintLookup();
     paintRemind();
     toast('Settings saved.', 'good');
   });
@@ -2164,6 +2342,46 @@ function boot() {
   });
 
   $opt('offFix').addEventListener('click', () => showTab('set'));
+
+  /* Waits for typing to stop rather than firing on every letter — fewer
+     requests, and with Google that is fewer billable ones. */
+  let lookupTimer = null, lookupSeq = 0;
+  $('fName').addEventListener('input', () => {
+    const q = $('fName').value.trim();
+    clearTimeout(lookupTimer);
+    if (lookupMode() === 'off' || q.length < LOOKUP_MIN) { paintSuggestions([]); return; }
+    lookupTimer = setTimeout(async () => {
+      const mine = ++lookupSeq;
+      try {
+        const list = await lookupPlaces(q);
+        /* A slow answer to an old query must not replace a newer one. */
+        if (mine !== lookupSeq) return;
+        paintSuggestions(list);
+      } catch (e) {
+        if (mine !== lookupSeq) return;
+        const m = String(e.message || e);
+        paintSuggestions(null,
+          m === 'no-key' ? 'No Google key set — add one in Settings, or switch to OpenStreetMap.'
+          : m === 'bad-key' ? 'Google refused that key. Check it is enabled and restricted to this address.'
+          : 'Could not reach the lookup service. Type the name in.');
+      }
+    }, LOOKUP_PAUSE);
+  });
+
+  $('fName').addEventListener('blur', () => {
+    /* Late enough that a tap on a suggestion still registers. */
+    setTimeout(() => paintSuggestions([]), 200);
+  });
+
+  $opt('sLookup').addEventListener('change', () => {
+    setCfg('lookup', $opt('sLookup').value);
+    paintSuggestions([]);
+    paintLookup();
+  });
+
+  $opt('sPlacesKey').addEventListener('change', () => {
+    setCfg('placesKey', $opt('sPlacesKey').value.trim());
+  });
 
   $opt('openOffer').addEventListener('click', () => {
     const url = $opt('fOffer').value.trim();
@@ -2304,6 +2522,7 @@ function boot() {
   paintStatus();
   paintReaderMode();
   paintScannerState();
+  paintLookup();
   paintRemind();
   paintReturn();
   paintOffer();

@@ -191,6 +191,37 @@ nothing is written without that tap, and the app never reads your calendar.
 shop asking how their service was is not worth a field; a contest with a prize
 gets its link, and a button to open it.
 
+## Looking a business up by name
+
+Type "chez ash" and be offered *Restaurant Chez Ashton* with its address.
+**Settings → Business lookup** picks who answers, and it is **off** by default —
+off calls nobody and sends nothing anywhere.
+
+| | Cost | Setup | Coverage |
+|---|---|---|---|
+| **Off** (default) | — | — | Shops you have filed before |
+| **OpenStreetMap** | Free | None | Thinner on small shops; no phone numbers |
+| **Google Places** | Free *within limits* | A key, and a card on file | Almost every business, with phone |
+
+OpenStreetMap needs no account, no key and no card. Its data is only as good as
+whoever last surveyed that street, so a small shop may be missing.
+
+Google knows nearly everything and returns a phone number too, but **Google will
+not issue a key without a billing account**, and a key shipped inside a web page
+is public however it is restricted. So if you use it:
+
+1. Enable **Places API (New)** in the same Cloud project as Drive
+2. Create a key and restrict it to `https://munteanpaul7-droid.github.io`
+3. **Set a daily quota cap on the API in the Cloud Console**
+
+Step 3 is the one that matters. A restriction discourages misuse; a quota cap is
+what makes a charge impossible rather than merely unlikely. The app helps by
+waiting for you to stop typing before it asks anything, and by requesting only
+the three fields it can actually use.
+
+Tapping a suggestion fills the name, and the address and phone if those boxes
+are still empty — anything you typed is never overwritten.
+
 ## Google Drive stays connected
 
 The token Google gives a browser app lasts about an hour and cannot be
@@ -198,9 +229,12 @@ refreshed the way a server can. So the app renews it quietly instead — on a
 timer, whenever you come back to the app, and whenever the network returns.
 That covers closing the tab, locking the phone, and leaving it overnight.
 
-When it genuinely cannot, **a red banner says so on the first screen** rather
-than leaving you to notice a small dot. Receipts saved while it is down are
-kept on the phone and upload by themselves once it is back, exactly as before.
+The connection is watched continuously and each change is announced once —
+green when it comes back, red when it lapses — for three seconds, then it
+fades. A notice that sits there permanently stops being read; **the dot beside
+the title is what stays** if you want to check. Receipts saved while it is down
+are kept on the phone and upload by themselves once it is back, exactly as
+before.
 
 ## When the reading stops working
 

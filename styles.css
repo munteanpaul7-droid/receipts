@@ -85,11 +85,25 @@ header{
   border:2px solid var(--line);border-top-color:var(--acc);animation:sp .7s linear infinite}
 @keyframes sp{to{transform:rotate(360deg)}}
 
+/* Suggestions hang under the merchant box while you type. */
+.sugg{margin-top:6px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--card2)}
+.sugg button{display:block;width:100%;text-align:left;background:none;border:0;
+  border-bottom:1px solid var(--line);padding:10px 12px;color:var(--txt);font-size:14px}
+.sugg button:last-child{border-bottom:0}
+.sugg button:active{background:var(--card)}
+.sugg .nm{font-weight:600;display:block}
+.sugg .ad{font-size:12px;color:var(--dim);display:block;margin-top:2px}
+.sugg .msg{padding:10px 12px;font-size:12px;color:var(--dim)}
+
 .hint{font-size:12px;color:var(--dim);margin:6px 2px 0}
 .hint.top0{margin-top:0}
 .chips{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
 .chip{background:var(--card2);border:1px solid var(--line);border-radius:999px;padding:8px 13px;font-size:13px;font-weight:600;color:var(--txt)}
 .chip:active{border-color:var(--acc)}
+/* Green, because this one does something for you rather than merely showing
+   you something — it is the same promise the Save button makes. */
+.chip.go{background:#16794a;border-color:#1f9c60;color:#eafff3}
+.chip.go:active{background:#12633c}
 
 .sum{display:flex;justify-content:space-between;font-size:13px;color:var(--dim);padding:11px 2px 0;border-top:1px dashed var(--line);margin-top:12px}
 .sum.plain{border:0;padding-top:4px;margin-top:0}
@@ -129,6 +143,9 @@ header{
 /* The startup-failure banner. Red, because unlike the setup notice it is
    telling you something is wrong rather than merely unfinished. */
 .banner.bad{background:#3a1218;border-color:#7a2434;color:#ff9aa8}
+/* Connection notices announce a change and then get out of the way; the dot
+   in the header is what stays. */
+.banner.fade{opacity:0;transition:opacity .6s ease}
 .banner.bad .chip{margin-left:6px;vertical-align:middle}
 
 h3{font-size:13px;text-transform:uppercase;letter-spacing:.6px;color:var(--dim);margin:22px 2px 8px}
