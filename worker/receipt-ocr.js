@@ -56,9 +56,13 @@ const RECEIPT_SCHEMA = {
     provincial_tax_number: { type: ['string','null'], description: 'Vendor QST/TVQ/PST registration number if printed.' },
     tip:        { type: ['number','null'], description: 'Tip or gratuity in dollars if shown separately.' },
     confidence: { type: 'string', enum: ['high','medium','low'], description: 'low if the image is blurry, cropped, or not a receipt.' },
-    note:       { type: ['string','null'], description: 'One short sentence only if something needs checking by hand. Otherwise null.' }
+    note:       { type: ['string','null'], description: 'One short sentence only if something needs checking by hand. Otherwise null.' },
+    terms:      { type: ['string','null'], description: 'Plain-language summary, two sentences at most, of any return policy, warranty or condition printed on the receipt. Null if none is printed.' },
+    return_days:{ type: ['number','null'], description: 'Number of days allowed to return or exchange, if the receipt states one. Where several are given, the shortest. Null if not stated.' },
+    offer_summary: { type: ['string','null'], description: 'One sentence describing a promotion, contest or survey ONLY when something can be won. A survey that merely asks for feedback is not one: return null for it.' },
+    offer_url:  { type: ['string','null'], description: 'The web address for that offer, exactly as printed. Null unless offer_summary is set.' }
   },
-  required: ['merchant','address','phone','date','time','total','subtotal','federal_tax','provincial_tax',
+  required: ['merchant','address','phone','date','time','terms','return_days','offer_summary','offer_url','total','subtotal','federal_tax','provincial_tax',
              'tax_group','category','federal_tax_number','provincial_tax_number',
              'tip','confidence','note']
 };
@@ -87,7 +91,15 @@ const SYSTEM = [
   '- A receipt photographed at an angle or partly in shadow is still readable —',
   '  do your best, and set confidence to medium or low to say how sure you are.',
   '- If the image is not a receipt at all, set confidence to low, leave the',
-  '  fields null, and say so in note.'
+  '  fields null, and say so in note.',
+  '- Read the small print under the total. Summarise a return policy,',
+  '  warranty or condition in plain language, two sentences at most, and give',
+  '  the number of days allowed to bring it back. Where several windows are',
+  '  printed, report the shortest, since that is the one that bites.',
+  '- Report a promotion, contest or survey ONLY when something can actually',
+  '  be won. A shop asking how their service was is not worth reporting:',
+  '  leave offer_summary null for it. Say in one sentence what is on offer',
+  '  and what it takes to enter.'
 ].join('\n');
 
 /* The origin is echoed back even when it is refused. The 403 is what keeps

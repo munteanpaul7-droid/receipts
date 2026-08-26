@@ -37,6 +37,12 @@
     Anything you save before that is kept safely on this phone and uploads later.
   </div>
 
+  <div id="offWarn" class="banner bad hide">
+    <b>Google Drive is not connected.</b>
+    <span id="offWhy">Receipts you save are kept on this phone and upload once it is.</span>
+    <div class="chips"><button class="chip" id="offFix">Connect Drive</button></div>
+  </div>
+
   <div class="shot">
     <button class="btn" id="camBtn">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
@@ -137,6 +143,34 @@
     <div class="sum plain"><span id="chkLbl">Subtotal + tax</span><b id="chk">$0.00</b></div>
   </div>
 
+  <h3>Terms, returns and offers</h3>
+  <div class="card">
+    <div class="f">
+      <label for="fTerms">What the small print says</label>
+      <textarea id="fTerms" placeholder="Return policy, warranty, promotion — filled in from the receipt"></textarea>
+    </div>
+    <div class="f row">
+      <div>
+        <label for="fReturnBy">Return by</label>
+        <input type="date" id="fReturnBy">
+      </div>
+      <div>
+        <label for="fRefund">Refund if returned ($)</label>
+        <input type="text" id="fRefund" inputmode="decimal" placeholder="0.00">
+      </div>
+    </div>
+    <p class="hint" id="returnNote"></p>
+    <div class="f" id="offerWrap">
+      <label for="fOffer">Offer worth entering</label>
+      <input type="url" id="fOffer" placeholder="Survey or promotion link" autocomplete="off" spellcheck="false">
+      <p class="hint" id="offerNote"></p>
+    </div>
+    <div class="chips">
+      <button class="chip hide" id="openOffer">Open the offer</button>
+      <button class="chip hide" id="calBtn">Add return date to your calendar</button>
+    </div>
+  </div>
+
   <h3>Registration numbers (optional)</h3>
   <div class="card">
     <div class="f">
@@ -222,6 +256,31 @@
     <div class="chips">
       <button class="chip hide" id="aiWake">Turn the scanner back on</button>
     </div>
+  </div>
+
+  <h3>Return reminders</h3>
+  <div class="card">
+    <div class="f">
+      <label for="sRemind">Put return deadlines in Google Calendar</label>
+      <select id="sRemind">
+        <option value="0">No</option>
+        <option value="1">Yes &mdash; remind me before the window closes</option>
+      </select>
+      <p class="hint">Events go to the calendar of whichever Google account is
+      signed in here. Turning this on asks Google for permission to add calendar
+      events, which the app does not otherwise need — it only ever creates the
+      ones you tap for, and never reads your calendar. You can leave this on No
+      and use the button on a receipt instead; it asks for itself.</p>
+    </div>
+    <div class="f">
+      <label for="sRemindDays">How many days ahead</label>
+      <select id="sRemindDays">
+        <option value="1">1 day before</option>
+        <option value="3">3 days before</option>
+        <option value="7">A week before</option>
+      </select>
+    </div>
+    <p class="hint" id="remindState"></p>
   </div>
 
   <h3>Folder &amp; taxes</h3>

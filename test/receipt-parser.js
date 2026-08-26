@@ -304,6 +304,71 @@ console.log('\n== date and time together, as a till prints them ==');
   ok('nor the address', r.address === '830 Boul Charest Est, Quebec, QC G1K 3J7', r.address);
 }
 
+console.log('\n== the small print: how long you have to bring it back ==');
+{
+  const days = (l) => parseReceiptText(['SHOP', 'TOTAL 10.00', l].join('\n')).return_days;
+  ok('English', days('Returns accepted within 30 days with receipt') === 30, days('Returns accepted within 30 days with receipt'));
+  ok('French', days('Echange ou remboursement dans les 15 jours') === 15, days('Echange ou remboursement dans les 15 jours'));
+  ok('business days count', days('Refund within 10 business days') === 10, days('Refund within 10 business days'));
+  /* Two windows printed: the shorter one is the deadline that bites. */
+  ok('the shorter window wins', days('Refund within 30 days. Exchange within 90 days.') === 30,
+     days('Refund within 30 days. Exchange within 90 days.'));
+  ok('a delivery promise is not a return policy', days('Ready in 3 days') === null, days('Ready in 3 days'));
+  ok('an absurd window is ignored', days('Return within 4000 days') === null, days('Return within 4000 days'));
+  ok('nothing printed means nothing claimed', days('Thank you') === null, days('Thank you'));
+}
+
+console.log('\n== the return date is worked out from the purchase date ==');
+{
+  const r = parseReceiptText([
+    'CANADIAN TIRE', recent(0), 'TOTAL 62.13',
+    'Returns accepted within 30 days with receipt'
+  ].join('\n'));
+  ok('days read', r.return_days === 30, r.return_days);
+  ok('deadline is purchase + 30', r.return_by === app.addDays(recent(0), 30), r.return_by);
+  ok('the wording is kept', /30 days/.test(r.terms || ''), r.terms);
+}
+
+console.log('\n== an offer is only surfaced when something can be won ==');
+{
+  const win = parseReceiptText(['SHOP','TOTAL 10.00',
+    'Tell us how we did at www.survey.example.ca/abc for a chance to win $1000'].join('\n'));
+  ok('the link is captured', win.offer_url === 'www.survey.example.ca/abc', win.offer_url);
+  ok('and described', /won/i.test(win.offer_summary || ''), win.offer_summary);
+
+  const plain = parseReceiptText(['SHOP','TOTAL 10.00',
+    'How did we do? Visit www.feedback.example.ca/abc'].join('\n'));
+  ok('a plain feedback survey is not surfaced', plain.offer_summary === null, plain.offer_summary);
+  ok('and its link is not either', plain.offer_url === null, plain.offer_url);
+
+  const fr = parseReceiptText(['SHOP','TOTAL 10.00',
+    'Concours: gagnez 500$ - www.concours.example.ca'].join('\n'));
+  ok('French contest is caught', fr.offer_url === 'www.concours.example.ca', fr.offer_url);
+}
+
+console.log('\n== wording it does not recognise is copied out verbatim ==');
+{
+  /* Pattern matching cannot summarise. Rather than leave the box empty it
+     transcribes the note as printed, which is what you would have read off
+     the paper yourself. */
+  const r = parseReceiptText(['DEPANNEUR', 'TOTAL 10.00',
+    'Merci de votre visite. Tous les articles vendus sont repris sur presentation du recu.',
+    'Les vetements en solde ne sont ni repris ni echanges.'].join('\n'));
+  ok('the note is captured', /Merci de votre visite|articles vendus/.test(r.terms || ''), r.terms);
+  ok('both lines of it', /solde/.test(r.terms || ''), r.terms);
+
+  const noisy = parseReceiptText(['SHOP', 'TOTAL 10.00', '*** 4829 ***', '||| 88 |||'].join('\n'));
+  ok('barcodes and till numbers are not prose', noisy.terms === null, noisy.terms);
+}
+
+console.log('\n== a receipt with no small print claims none ==');
+{
+  const r = parseReceiptText(['SHOP', recent(0), 'TOTAL 10.00'].join('\n'));
+  ok('no terms', r.terms === null, r.terms);
+  ok('no return date', r.return_by === null, r.return_by);
+  ok('no offer', r.offer_url === null && r.offer_summary === null, [r.offer_url, r.offer_summary]);
+}
+
 console.log('\n== dates ==');
 ok('ISO', findDate('Date: ' + recent(2)) === recent(2));
 ok('day-first numeric', findDate(dmy(4)) === recent(4), findDate(dmy(4)));
