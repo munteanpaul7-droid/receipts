@@ -242,6 +242,50 @@ const ok = (n, c, x) => { if (c) { pass++; console.log('  ok   ' + n); } else { 
   ok('temp doc deleted', await page.evaluate(() => window.__pdfDeleted));
   await page.screenshot({ path: '/tmp/receipts-shot-pdf.png' });
 
+  console.log('\n== business-name suggestions ==');
+  await page.evaluate(() => {
+    localStorage.setItem('rc_cfg_lookup', JSON.stringify('osm'));
+    ['fName','fAddr','fPhone'].forEach(id => document.getElementById(id).value = '');
+  });
+  await page.reload({ waitUntil: 'load' });
+  await page.waitForTimeout(600);
+  await page.evaluate(() => {
+    const real = window.fetch;
+    window.__looked = 0;
+    window.fetch = (u, o) => {
+      if (String(u).includes('photon')) {
+        window.__looked++;
+        return Promise.resolve(new Response(JSON.stringify({ features: [
+          { properties: { name: 'Restaurant Chez Ashton', housenumber: '830',
+                          street: 'Boulevard Charest Est', city: 'Quebec', postcode: 'G1K 3J7' } }
+        ] }), { status: 200 }));
+      }
+      return real(u, o);
+    };
+  });
+  await page.click('#fName');
+  await page.type('#fName', 'chez ash', { delay: 30 });
+  await page.waitForTimeout(1200);
+  ok('a suggestion appears', await page.isVisible('#suggBox .nm'), await page.textContent('#suggBox'));
+  ok('typing was debounced into one lookup', await page.evaluate(() => window.__looked) === 1,
+     await page.evaluate(() => window.__looked));
+  await page.click('#suggBox button');
+  await page.waitForTimeout(300);
+  ok('tapping it fills the name', (await page.inputValue('#fName')) === 'Restaurant Chez Ashton', await page.inputValue('#fName'));
+  ok('and the address', /830 Boulevard Charest Est/.test(await page.inputValue('#fAddr')), await page.inputValue('#fAddr'));
+  ok('the list closes again', !(await page.isVisible('#suggBox .nm')));
+
+  ok('a typed address is never overwritten', await page.evaluate(async () => {
+    document.getElementById('fName').value = '';
+    document.getElementById('fAddr').value = 'MY OWN ADDRESS';
+    const inp = document.getElementById('fName');
+    inp.value = 'chez ash';
+    inp.dispatchEvent(new Event('input'));
+    await new Promise(r => setTimeout(r, 1000));
+    document.querySelector('#suggBox button').click();
+    return document.getElementById('fAddr').value === 'MY OWN ADDRESS';
+  }));
+
   console.log('\n== the service worker registers and serves the shell ==');
   const sw = await page.evaluate(async () => {
     const r = await navigator.serviceWorker.getRegistration();

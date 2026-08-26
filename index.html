@@ -96,6 +96,7 @@
       <label for="fName">Name / merchant</label>
       <input type="text" id="fName" list="merchants" placeholder="e.g. Costco Wholesale" autocomplete="off" autocapitalize="words">
       <datalist id="merchants"></datalist>
+      <div class="sugg hide" id="suggBox"></div>
     </div>
 
     <div class="f">
@@ -255,6 +256,27 @@
     <p class="hint" id="aiState"></p>
     <div class="chips">
       <button class="chip hide" id="aiWake">Turn the scanner back on</button>
+    </div>
+  </div>
+
+  <h3>Business lookup</h3>
+  <div class="card">
+    <div class="f">
+      <label for="sLookup">Suggest business names as you type</label>
+      <select id="sLookup">
+        <option value="off">Off &mdash; only shops I have filed before</option>
+        <option value="osm">OpenStreetMap &mdash; free, no account, no card</option>
+        <option value="google">Google Places &mdash; better, needs a key and a card</option>
+      </select>
+      <p class="hint" id="lookupHint"></p>
+    </div>
+    <div class="f hide" id="googleOnly">
+      <label for="sPlacesKey">Google Places API key</label>
+      <input type="text" id="sPlacesKey" placeholder="AIza..." autocomplete="off" spellcheck="false">
+      <p class="hint">Google will not issue a key without a billing account. The key
+      travels in this app, so restrict it to <b id="keyOrigin"></b> and set a daily
+      quota cap in the Cloud Console &mdash; a cap is what makes a charge impossible
+      rather than merely unlikely.</p>
     </div>
   </div>
 

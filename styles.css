@@ -85,6 +85,16 @@ header{
   border:2px solid var(--line);border-top-color:var(--acc);animation:sp .7s linear infinite}
 @keyframes sp{to{transform:rotate(360deg)}}
 
+/* Suggestions hang under the merchant box while you type. */
+.sugg{margin-top:6px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--card2)}
+.sugg button{display:block;width:100%;text-align:left;background:none;border:0;
+  border-bottom:1px solid var(--line);padding:10px 12px;color:var(--txt);font-size:14px}
+.sugg button:last-child{border-bottom:0}
+.sugg button:active{background:var(--card)}
+.sugg .nm{font-weight:600;display:block}
+.sugg .ad{font-size:12px;color:var(--dim);display:block;margin-top:2px}
+.sugg .msg{padding:10px 12px;font-size:12px;color:var(--dim)}
+
 .hint{font-size:12px;color:var(--dim);margin:6px 2px 0}
 .hint.top0{margin-top:0}
 .chips{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
