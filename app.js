@@ -66,7 +66,7 @@ const MONTHS = ['January','February','March','April','May','June',
 const CSV_NAME = 'receipts-index.csv';
 /* Keep every header comma-free — appendToIndex splits the stored header on
    commas to spot an out-of-date layout. */
-const CSV_HEADER = ['Date','Merchant','Address','Phone','Category','Purpose','Tax group','Subtotal',
+const CSV_HEADER = ['Date','Time','Merchant','Address','Phone','Category','Purpose','Tax group','Subtotal',
                     'Federal tax (GST/HST/TPS)','Provincial tax (PST/QST/TVQ)','Total',
                     'Federal tax no.','Provincial tax no.','File','Drive link','Saved at'];
 
@@ -92,7 +92,7 @@ const DEFAULTS = {
 /* Bumped whenever app.js, index.html or styles.css change. Shown in Settings
    so "did the update actually land" is a question you can answer from the
    phone, and used by the service worker to name its cache. */
-const APP_VERSION = '2026-08-24.5';
+const APP_VERSION = '2026-08-24.6';
 
 /* ------------------------------------------------------------- utilities */
 
@@ -529,7 +529,16 @@ function paintHistory() {
 
 function paintMerchants() {
   const v = S.get('vendors', {});
-  $('merchants').innerHTML = Object.keys(v).map((k) => '<option value="' + (v[k].label || k).replace(/"/g, '') + '">').join('');
+  const keys = Object.keys(v);
+  $('merchants').innerHTML = keys.map((k) => '<option value="' + (v[k].label || k).replace(/"/g, '') + '">').join('');
+
+  /* Every address this phone has already filed, offered as you type. Between
+     this and the phone's own saved addresses, typing one out in full is rare
+     — and neither costs anything or needs an account. */
+  const seen = {};
+  keys.forEach((k) => { if (v[k].addr) seen[v[k].addr] = true; });
+  $opt('addresses').innerHTML = Object.keys(seen)
+    .map((a) => '<option value="' + a.replace(/"/g, '') + '">').join('');
 }
 
 /* Relabels the tax fields for the chosen province and folds away the second
@@ -583,7 +592,7 @@ function clearPreview() {
 function resetForm(keepDate) {
   if (!keepDate) $('fDate').value = todayISO();
   $('fTotal').value = ''; $('fName').value = ''; $('fPurpose').value = '';
-  $('fAddr').value = ''; $('fPhone').value = '';
+  $('fAddr').value = ''; $('fPhone').value = ''; $('fTime').value = '';
   $('fTps').value = ''; $('fTvq').value = ''; $('fTpsNo').value = ''; $('fTvqNo').value = '';
   clearPreview();
   updateSums();
@@ -931,6 +940,29 @@ function findDate(text) {
   return found[0].text;
 }
 
+/* The time of purchase, as tills print it: 18:42, 18:42:15, 6:42 PM, and the
+   French 18h42. Returned as HH:MM for the 24-hour <input type="time">.
+   A colon or an h between the numbers is what makes this safe to look for —
+   an amount uses a dot or a comma, and a phone number has neither. */
+const TIME_RE = /\b(\d{1,2})\s*[:h]\s*([0-5]\d)(?:\s*[:.]\s*([0-5]\d))?\s*(a\.?m\.?|p\.?m\.?)?/ig;
+
+function findTime(text) {
+  let m;
+  TIME_RE.lastIndex = 0;
+  while ((m = TIME_RE.exec(text))) {
+    let h = parseInt(m[1], 10);
+    const min = m[2];
+    const ampm = (m[4] || '').toLowerCase().replace(/\./g, '');
+    if (ampm === 'pm' && h < 12) h += 12;
+    if (ampm === 'am' && h === 12) h = 0;
+    /* Without am/pm the hour must already be a real 24-hour one. A stray
+       "Table 24:00" or a mangled number is not a time of day. */
+    if (h > 23) continue;
+    return String(h).padStart(2, '0') + ':' + min;
+  }
+  return null;
+}
+
 /* The shop name is nearly always the first real line. Skip the noise a
    till prints above it and anything that is mostly digits. */
 const NAME_NOISE = /^(?:re[çc]u|receipt|facture|invoice|copie|copy|client|merchant|marchand|bienvenue|welcome|thank|merci|bon\s|tel|t[ée]l|fax|www\.|http|no\.?\s*\d|#\d|caisse|term|terminal|date|heure|time)/i;
@@ -1180,6 +1212,7 @@ function parseReceiptText(text) {
     address: findAddress(lines, nameAt),
     phone: findPhone(body),
     date: findDate(clean),
+    time: findTime(body),
     total: total,
     subtotal: subtotal,
     federal_tax: fedTax,
@@ -1371,6 +1404,7 @@ function applyScan(f) {
   put('fAddr', f.address, 'address');
   put('fPhone', f.phone, 'phone');
   if (/^\d{4}-\d{2}-\d{2}$/.test(f.date || '')) { $('fDate').value = f.date; filled.push('date'); }
+  if (/^([01]\d|2[0-3]):[0-5]\d$/.test(f.time || '')) { put('fTime', f.time, 'time'); }
   put('fTotal', f.total !== null && f.total !== undefined ? fixed(f.total) : '', 'total');
 
   const rt = taxRates($('fTax').value);
@@ -1494,6 +1528,7 @@ function collect() {
   const name = $('fName').value.trim();
   return {
     date,
+    time: $('fTime').value,
     name,
     addr: $('fAddr').value.trim(),
     phone: $('fPhone').value.trim(),
@@ -1537,7 +1572,8 @@ async function uploadJob(job) {
     'Merchant: ' + m.name +
     (m.addr ? '\nAddress: ' + m.addr : '') +
     (m.phone ? '\nPhone: ' + m.phone : '') +
-    '\nDate: ' + m.date + '\nCategory: ' + m.cat +
+    '\nDate: ' + m.date + (m.time ? ' ' + m.time : '') +
+    '\nCategory: ' + m.cat +
     '\nPurpose: ' + m.purpose + '\nTax group: ' + g.name + ' (' + g.code + ')' +
     '\nSubtotal: ' + fixed(sub) +
     '\n' + rt.t1 + ': ' + fixed(m.tps) +
@@ -1552,6 +1588,7 @@ async function uploadJob(job) {
   /* Drive rejects an empty appProperties value, so only set what we have. */
   if (m.addr) props.address = m.addr.slice(0, 120);
   if (m.phone) props.phone = m.phone;
+  if (m.time) props.time = m.time;
 
   let fileName, link = '';
   if (job.blob) {
@@ -1565,7 +1602,7 @@ async function uploadJob(job) {
   }
 
   await appendToIndex(rootId, [
-    m.date, m.name, m.addr || '', m.phone || '',
+    m.date, m.time || '', m.name, m.addr || '', m.phone || '',
     m.cat, m.purpose, g.code, fixed(sub), fixed(m.tps), fixed(m.tvq),
     fixed(m.total), m.tpsNo, m.tvqNo, fileName, link, new Date().toISOString()
   ]);
@@ -1917,7 +1954,7 @@ function boot() {
 
   $('csvBtn').addEventListener('click', () => {
     const rows = [CSV_HEADER].concat(getHistory().map((r) => [
-      r.date, r.name, r.addr || '', r.phone || '', r.cat, r.purpose, r.tax || 'QC',
+      r.date, r.time || '', r.name, r.addr || '', r.phone || '', r.cat, r.purpose, r.tax || 'QC',
       fixed(r.total - r.tps - r.tvq), fixed(r.tps), fixed(r.tvq),
       fixed(r.total), r.tpsNo || '', r.tvqNo || '', r.file || '', r.link || '', r.status
     ]));

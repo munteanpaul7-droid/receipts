@@ -73,8 +73,12 @@ April 2025. If a rate ever changes, either edit `TAX_GROUPS` at the top of
   supplies, Travel / Hotel, Vehicle / Maintenance, Utilities / Telecom,
   Professional services, Software / Subscriptions, Tools / Equipment,
   Advertising / Marketing, Other.
+- **Time** of the transaction is read alongside the date — 18:42, 6:42 PM and
+  the French 18h42 all land as one thing.
 - **Address** and **Phone** are read off the receipt when they are printed
   there, and remembered per merchant just like the registration numbers.
+  Typing in the address box offers every address already filed from this
+  phone, and your phone's own saved addresses on top of that.
 - TPS and TVQ registration numbers are optional and remembered per merchant —
   type the same shop name next time and they fill themselves in.
 - **Save to Drive** files it.
@@ -90,7 +94,7 @@ receipts/
       2026-08-24 Gas Ultramar 62.10.jpg
 ```
 
-Open `receipts-index.csv` in Google Sheets and you have date, merchant,
+Open `receipts-index.csv` in Google Sheets and you have date, time, merchant,
 address, phone, category, purpose, tax group, subtotal, federal tax,
 provincial tax, total, both registration numbers, the file name and a direct
 link. An index written by an earlier version has fewer columns; rather than
