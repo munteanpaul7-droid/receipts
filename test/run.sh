@@ -18,6 +18,7 @@ console.log("ok   all " + used.size + " ids present");'
 
 echo "\n--- receipt parser ---";              node test/receipt-parser.js
 echo "\n--- drive ocr ---";                    node test/drive-ocr.js
+echo "\n--- reminders and connection ---";        node test/reminders.js
 echo "\n--- scanner health and diagnosis ---"; node test/scanner-health.js
 echo "\n--- scan flow ---";                    node test/scan-flow.js
 echo "\n--- worker ---";                       node test/worker.mjs

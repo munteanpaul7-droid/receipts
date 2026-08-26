@@ -164,6 +164,44 @@ Anthropic account with credit, roughly a dollar or two a month at a hundred
 receipts. Note this is **separate from a Claude Pro or Max subscription**, which
 does not cover API usage.
 
+## The small print, and return dates
+
+Under the total, tills print the things you only care about later. The app now
+catches them at the moment of filing.
+
+**What the small print says** is copied into its own box. Where the free reader
+recognises the wording it picks out the policy; where it does not, it simply
+transcribes the note as printed — it cannot summarise, so it gives you the
+shop's own words rather than nothing. Claude, if you have it switched on,
+writes an actual summary instead.
+
+**Return by** is worked out from the receipt: "returns within 30 days" and
+"échange dans les 15 jours" both become a date, and where a receipt states two
+windows the shorter one wins, since that is the one that bites. The hint below
+tells you how many days are left, and **Refund if returned** defaults to what
+you paid.
+
+**Add return date to your calendar** appears whenever there is a return date.
+Tapping it puts an event in the calendar of whichever Google account is signed
+in here, a few days before the window closes, asking whether to keep it or take
+it back and for how much. The first tap asks Google for calendar permission —
+nothing is written without that tap, and the app never reads your calendar.
+
+**Offer worth entering** only appears when something can actually be won. A
+shop asking how their service was is not worth a field; a contest with a prize
+gets its link, and a button to open it.
+
+## Google Drive stays connected
+
+The token Google gives a browser app lasts about an hour and cannot be
+refreshed the way a server can. So the app renews it quietly instead — on a
+timer, whenever you come back to the app, and whenever the network returns.
+That covers closing the tab, locking the phone, and leaving it overnight.
+
+When it genuinely cannot, **a red banner says so on the first screen** rather
+than leaving you to notice a small dot. Receipts saved while it is down are
+kept on the phone and upload by themselves once it is back, exactly as before.
+
 ## When the reading stops working
 
 Whichever reader you use, **it failing never stops you filing receipts** —

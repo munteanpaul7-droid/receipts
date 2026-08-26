@@ -66,7 +66,7 @@ const MONTHS = ['January','February','March','April','May','June',
 const CSV_NAME = 'receipts-index.csv';
 /* Keep every header comma-free — appendToIndex splits the stored header on
    commas to spot an out-of-date layout. */
-const CSV_HEADER = ['Date','Time','Merchant','Address','Phone','Category','Purpose','Tax group','Subtotal',
+const CSV_HEADER = ['Date','Time','Merchant','Address','Phone','Category','Purpose','Return by','Refund','Offer','Terms','Tax group','Subtotal',
                     'Federal tax (GST/HST/TPS)','Provincial tax (PST/QST/TVQ)','Total',
                     'Federal tax no.','Provincial tax no.','File','Drive link','Saved at'];
 
@@ -80,6 +80,8 @@ const DEFAULTS = {
   struct: 'ym',
   taxGroup: 'QC',
   aiUrl: '',
+  remind: '0',
+  remindDays: '3',
   /* Google Drive reads receipts for nothing and needs no setting up, so it
      is what a fresh install uses. See readerMode() for the one exception. */
   reader: 'drive',
@@ -92,7 +94,7 @@ const DEFAULTS = {
 /* Bumped whenever app.js, index.html or styles.css change. Shown in Settings
    so "did the update actually land" is a question you can answer from the
    phone, and used by the service worker to name its cache. */
-const APP_VERSION = '2026-08-24.6';
+const APP_VERSION = '2026-08-26.1';
 
 /* ------------------------------------------------------------- utilities */
 
@@ -182,15 +184,28 @@ function connected() { return !!accessToken && Date.now() < tokenExp - 60000; }
 function initTokenClient() {
   const id = cfg('clientId');
   if (!id || !window.google || !google.accounts || !google.accounts.oauth2) return false;
-  if (tokenClient && tokenClient.__id === id) return true;
+  const want = scopeWanted();
+  if (tokenClient && tokenClient.__id === id && tokenClient.__scope === want) return true;
   tokenClient = google.accounts.oauth2.initTokenClient({
     client_id: id,
-    scope: 'https://www.googleapis.com/auth/drive.file',
+    scope: want,
     callback: () => {}
   });
   tokenClient.__id = id;
+  tokenClient.__scope = want;
   return true;
 }
+
+const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+const CAL_SCOPE = 'https://www.googleapis.com/auth/calendar.events';
+
+/* Reminders are off unless asked for, because switching them on means asking
+   Google for a permission the app does not otherwise need — and a working
+   Drive connection is not worth disturbing for a feature nobody enabled. */
+function scopeWanted() {
+  return cfg('remind') === '1' ? DRIVE_SCOPE + ' ' + CAL_SCOPE : DRIVE_SCOPE;
+}
+function remindersOn() { return cfg('remind') === '1'; }
 
 /* Must be invoked from inside a user gesture the first time, otherwise iOS
    Safari blocks the popup. `silent` reuses the existing Google session.   */
@@ -395,6 +410,49 @@ async function appendToIndex(rootId, row) {
   return id;
 }
 
+/* Puts the return deadline in Google Calendar, a few days before it falls,
+   so the question reaches you while you can still act on it. The event runs
+   on the day itself as well, and Calendar's own notification is what taps
+   you on the shoulder — a static site has no server to push from, and this
+   is the mechanism Google already gives every phone. */
+async function addReturnReminder(m) {
+  if (!remindersOn() || !m.returnBy) return null;
+  await ensureToken();
+
+  const lead = Math.max(0, parseInt(cfg('remindDays'), 10) || 0);
+  const start = addDays(m.returnBy, -lead) || m.returnBy;
+  const what = m.name ? (m.cat + ' from ' + m.name) : m.cat;
+  const back = m.refund > 0 ? money(m.refund) : 'what you paid';
+
+  const body = {
+    summary: 'Return by ' + m.returnBy + ': ' + what,
+    description:
+      'The return window on this receipt closes on ' + m.returnBy + '.\n\n' +
+      'Keep it, or take it back for ' + back + '?\n\n' +
+      (m.terms ? 'What the receipt says: ' + m.terms + '\n\n' : '') +
+      (m.addr ? m.name + ', ' + m.addr + '\n' : '') +
+      (m.phone ? m.phone + '\n' : ''),
+    start: { date: start },
+    /* Google treats an all-day end as exclusive, so this is the same day. */
+    end: { date: addDays(start, 1) || start },
+    reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: 9 * 60 }] },
+    source: { title: 'Receipts', url: location.origin + location.pathname }
+  };
+
+  const res = await fetch(
+    'https://www.googleapis.com/calendar/v3/calendars/primary/events?fields=id,htmlLink',
+    {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + accessToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    }
+  );
+  if (res.status === 401) { accessToken = null; tokenExp = 0; throw new Error('auth-expired'); }
+  if (res.status === 403) throw new Error('calendar-not-granted');
+  if (!res.ok) throw new Error('calendar-' + res.status);
+  return res.json();
+}
+
 /* -------------------------------------------------- offline upload queue */
 
 function idb() {
@@ -483,6 +541,20 @@ function paintStatus() {
   $('sWho').value = ok ? 'Connected to Google Drive'
     : (cfg('clientId') ? 'Client ID saved. Tap Connect Drive.' : 'Not connected');
   $('setupWarn').className = 'banner' + (cfg('clientId') ? ' hide' : '');
+
+  /* A dot in the corner is easy to miss, and a receipt filed believing it
+     reached Drive when it did not is the failure that matters here. While
+     the connection is down it is said in red, on the screen you are already
+     looking at — and the reason is stated, because "sign-in lapsed" and
+     "never set up" call for different things. */
+  const off = $opt('offWarn');
+  const settingUp = !cfg('clientId') || !S.get('granted', false);
+  off.className = 'banner bad' + (ok || settingUp ? ' hide' : '');
+  if (!ok && !settingUp) {
+    $opt('offWhy').textContent = navigator.onLine
+      ? 'The Google sign-in has lapsed. Receipts are kept on this phone and upload as soon as it is back.'
+      : 'No connection at the moment. Receipts are kept on this phone and upload by themselves later.';
+  }
   const rid = S.get('rootId', null);
   $('folderInfo').textContent = rid
     ? 'Drive folder ready: "' + cfg('root') + '" (the app only sees files it created).'
@@ -593,6 +665,9 @@ function resetForm(keepDate) {
   if (!keepDate) $('fDate').value = todayISO();
   $('fTotal').value = ''; $('fName').value = ''; $('fPurpose').value = '';
   $('fAddr').value = ''; $('fPhone').value = ''; $('fTime').value = '';
+  $('fTerms').value = ''; $('fReturnBy').value = ''; $('fRefund').value = '';
+  $('fOffer').value = ''; $opt('offerNote').textContent = '';
+  paintReturn(); paintOffer();
   $('fTps').value = ''; $('fTvq').value = ''; $('fTpsNo').value = ''; $('fTvqNo').value = '';
   clearPreview();
   updateSums();
@@ -686,6 +761,16 @@ function noteScanFail(info) {
     until: fails >= SCAN_FAIL_LIMIT ? Date.now() + SCAN_COOLDOWN_MS : 0,
     code: info.code, msg: info.msg, fix: info.fix
   });
+}
+
+function paintRemind() {
+  const el = $opt('remindState');
+  if (!remindersOn()) {
+    el.textContent = 'Off. Return dates are still read off the receipt and saved with it.';
+    return;
+  }
+  el.textContent = 'On. Saving a receipt with a return date offers to put it in your calendar '
+    + cfg('remindDays') + ' day' + (cfg('remindDays') === '1' ? '' : 's') + ' before the window closes.';
 }
 
 /* Shows only the controls the chosen reader actually uses — a Worker URL
@@ -963,6 +1048,111 @@ function findTime(text) {
   return null;
 }
 
+/* ------------------------------------ the small print at the foot
+
+   Under the total, tills print the things you only care about later: how
+   long you have to bring it back, and the survey that might win you
+   something. Both are worth catching at the moment of filing, because by
+   the time they matter the receipt is in a folder in Drive.
+
+   Reading these with pattern matching has a hard limit. It can find "return
+   within 30 days" and a web address reliably, because those have shapes.
+   It cannot summarise a paragraph or judge what a promotion is really
+   offering — that is what the Claude reader is for, and where it earns its
+   keep. What follows is the honest best that costs nothing.               */
+
+/* "30 days", "30 jours", "within 90 days of purchase". The window must sit
+   near a word about returning, or every "3 days" on a receipt would look
+   like a refund policy. */
+const RETURN_NEAR = /(?:return|refund|exchange|échange|echange|remboursement|retour|rapport)/i;
+const RETURN_WINDOW = /(\d{1,3})\s*(day|days|jour|jours|calendar\s+days|business\s+days|jours\s+ouvrables)\b/i;
+
+function findReturnDays(text) {
+  const lines = String(text).split(/[\r\n.;]/);
+  let best = null;
+  for (const line of lines) {
+    if (!RETURN_NEAR.test(line)) continue;
+    const m = line.match(RETURN_WINDOW);
+    if (!m) continue;
+    const n = parseInt(m[1], 10);
+    /* A policy is days to weeks, not hours and not years. Anything outside
+       that is a quantity that happened to sit beside the word "return". */
+    if (n < 1 || n > 365) continue;
+    /* Where a receipt states more than one window — 30 days for a refund,
+       90 for an exchange — the shorter one is the deadline that bites. */
+    if (best === null || n < best) best = n;
+  }
+  return best;
+}
+
+function addDays(iso, n) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || '');
+  if (!m) return null;
+  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  d.setUTCDate(d.getUTCDate() + n);
+  const p = (x) => String(x).padStart(2, '0');
+  return d.getUTCFullYear() + '-' + p(d.getUTCMonth() + 1) + '-' + p(d.getUTCDate());
+}
+
+/* A web address as a till prints it, which is rarely a tidy one. */
+const URL_RE = /\b(?:https?:\/\/|www\.)[^\s,;)\]]+/i;
+
+/* Wording that means there is something to be won, as opposed to a shop
+   simply asking how their service was. Only the first is worth your time. */
+const PRIZE = /\b(?:win|winner|prize|draw|sweepstake|contest|chance\s+to\s+win|gagne[rz]?|gagnant|prix|concours|tirage|cadeau)\b/i;
+const SURVEY = /\b(?:survey|sondage|feedback|questionnaire|tell\s+us|dites[- ]nous|opinion|visit\s+us\s+online|www\.)/i;
+
+function findOffer(text) {
+  const t = String(text);
+  const url = (t.match(URL_RE) || [null])[0];
+  const hasPrize = PRIZE.test(t);
+  const isSurvey = SURVEY.test(t);
+  if (!hasPrize) return { url: null, prize: false, kind: isSurvey ? 'survey' : '' };
+  return {
+    url: url ? url.replace(/[.,]$/, '') : null,
+    prize: true,
+    kind: isSurvey ? 'survey' : 'promo'
+  };
+}
+
+/* The sentences the small print is actually made of. Not a summary — no
+   pattern can write one — but the lines that carry the meaning, which is
+   what you would have read yourself off the paper. */
+const TERMS_NEAR = /(?:return|refund|exchange|échange|echange|remboursement|retour|warranty|garantie|final\s+sale|vente\s+finale|no\s+refund|non\s+remboursable|receipt\s+required|survey|sondage|concours|gagne)/i;
+
+/* Prose, rather than a barcode, a till number or a row of asterisks. */
+function looksLikeProse(t) {
+  const letters = (t.match(/[A-Za-zÀ-ÿ]/g) || []).length;
+  return letters >= 8 && letters >= t.length / 2;
+}
+
+/* What the small print says, as printed. Summarising it is beyond pattern
+   matching — that is what the Claude reader is for — so this transcribes
+   instead, which is what you would have read off the paper yourself.
+
+   Two things are gathered and kept in the order they appear: any line using
+   wording this recognises, wherever it sits, and the prose at the foot of the
+   receipt after the last figure, which is where a shop puts its conditions.
+   Taking only the first would drop half a policy whenever the recognised
+   phrase happened to be in its second sentence. */
+function findTerms(lines) {
+  let lastMoney = -1;
+  lines.forEach((l, i) => { if (amountsIn(l).length) lastMoney = i; });
+
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim();
+    if (t.length < 8 || !looksLikeProse(t)) continue;
+    if (amountsIn(t).length) continue;
+    const known = TERMS_NEAR.test(t);
+    const footer = i > lastMoney && lastMoney >= 0;
+    if (!known && !footer) continue;
+    if (out.indexOf(t) < 0) out.push(t);
+    if (out.length >= 6) break;
+  }
+  return out.length ? out.join(' ').slice(0, 300) : null;
+}
+
 /* The shop name is nearly always the first real line. Skip the noise a
    till prints above it and anything that is mostly digits. */
 const NAME_NOISE = /^(?:re[çc]u|receipt|facture|invoice|copie|copy|client|merchant|marchand|bienvenue|welcome|thank|merci|bon\s|tel|t[ée]l|fax|www\.|http|no\.?\s*\d|#\d|caisse|term|terminal|date|heure|time)/i;
@@ -1206,12 +1396,24 @@ function parseReceiptText(text) {
                           : 'The tax does not add up to the total; check it.');
 
   const nameAt = merchantLine(lines);
+  const purchased = findDate(clean);
+  const days = findReturnDays(clean);
+  const offer = findOffer(clean);
 
   return {
+    terms: findTerms(lines),
+    return_days: days,
+    return_by: days !== null ? addDays(purchased || todayISO(), days) : null,
+    offer_summary: offer.prize
+      ? (offer.kind === 'survey'
+          ? 'Survey on the receipt with something to be won.'
+          : 'Promotion on the receipt with something to be won.')
+      : null,
+    offer_url: offer.url,
     merchant: findMerchant(lines, nameAt),
     address: findAddress(lines, nameAt),
     phone: findPhone(body),
-    date: findDate(clean),
+    date: purchased,
     time: findTime(body),
     total: total,
     subtotal: subtotal,
@@ -1378,6 +1580,35 @@ function blobToBase64(blob) {
   });
 }
 
+/* How long is left to take it back, said plainly. The count is what you
+   actually want to know; the date alone makes you do arithmetic. */
+function paintReturn() {
+  const by = $opt('fReturnBy').value;
+  const note = $opt('returnNote');
+  const cal = $opt('calBtn');
+  if (!by) {
+    note.textContent = 'No return window was found on the receipt. Fill it in if the shop gave you one.';
+    cal.className = 'chip hide';
+    return;
+  }
+  const days = Math.round((Date.parse(by + 'T12:00:00Z') - Date.now()) / 86400000);
+  const money = num($opt('fRefund').value) > 0 ? ' for ' + money0($opt('fRefund').value) : '';
+  note.textContent =
+    days < 0 ? 'That return window closed ' + Math.abs(days) + ' day' + (Math.abs(days) === 1 ? '' : 's') + ' ago.'
+    : days === 0 ? 'Today is the last day to take it back' + money + '.'
+    : 'You have ' + days + ' day' + (days === 1 ? '' : 's') + ' left to take it back' + money + '.';
+  cal.className = 'chip';
+}
+
+function money0(v) { return money(num(v)); }
+
+/* The offer only appears when there is something to be won. A shop asking
+   how their service was is not worth a field on a form. */
+function paintOffer() {
+  const url = $opt('fOffer').value.trim();
+  $opt('openOffer').className = 'chip' + (url ? '' : ' hide');
+}
+
 /* Fills what the form does not already have. Anything typed by hand wins —
    the scan is a head start, never an overwrite. */
 function applyScan(f) {
@@ -1410,6 +1641,18 @@ function applyScan(f) {
   const rt = taxRates($('fTax').value);
   put('fTps', f.federal_tax !== null && f.federal_tax !== undefined ? fixed(f.federal_tax) : '', rt.t1);
   if (rt.t2) put('fTvq', f.provincial_tax !== null && f.provincial_tax !== undefined ? fixed(f.provincial_tax) : '', rt.t2);
+
+  put('fTerms', f.terms, 'the small print');
+  if (/^\d{4}-\d{2}-\d{2}$/.test(f.return_by || '')) put('fReturnBy', f.return_by, 'return date');
+  /* Everything paid comes back on a full return, so that is the number to
+     offer; change it if the shop keeps a restocking fee. */
+  if (f.return_by && !$('fRefund').value && num($('fTotal').value) > 0) {
+    $('fRefund').value = fixed(num($('fTotal').value));
+  }
+  put('fOffer', f.offer_url, 'an offer');
+  if (f.offer_summary) $opt('offerNote').textContent = f.offer_summary;
+  paintReturn();
+  paintOffer();
 
   const nosBefore = filled.length;
   put('fTpsNo', f.federal_tax_number, '');
@@ -1532,6 +1775,10 @@ function collect() {
     name,
     addr: $('fAddr').value.trim(),
     phone: $('fPhone').value.trim(),
+    terms: $('fTerms').value.trim(),
+    returnBy: $('fReturnBy').value,
+    refund: num($('fRefund').value),
+    offer: $('fOffer').value.trim(),
     cat: $('fCat').value,
     purpose: $('fPurpose').value.trim(),
     tax: $('fTax').value,
@@ -1574,6 +1821,10 @@ async function uploadJob(job) {
     (m.phone ? '\nPhone: ' + m.phone : '') +
     '\nDate: ' + m.date + (m.time ? ' ' + m.time : '') +
     '\nCategory: ' + m.cat +
+    (m.returnBy ? '\nReturn by: ' + m.returnBy +
+       (m.refund ? ' (refund ' + fixed(m.refund) + ')' : '') : '') +
+    (m.offer ? '\nOffer: ' + m.offer : '') +
+    (m.terms ? '\nSmall print: ' + m.terms : '') +
     '\nPurpose: ' + m.purpose + '\nTax group: ' + g.name + ' (' + g.code + ')' +
     '\nSubtotal: ' + fixed(sub) +
     '\n' + rt.t1 + ': ' + fixed(m.tps) +
@@ -1589,6 +1840,7 @@ async function uploadJob(job) {
   if (m.addr) props.address = m.addr.slice(0, 120);
   if (m.phone) props.phone = m.phone;
   if (m.time) props.time = m.time;
+  if (m.returnBy) props.returnBy = m.returnBy;
 
   let fileName, link = '';
   if (job.blob) {
@@ -1603,7 +1855,8 @@ async function uploadJob(job) {
 
   await appendToIndex(rootId, [
     m.date, m.time || '', m.name, m.addr || '', m.phone || '',
-    m.cat, m.purpose, g.code, fixed(sub), fixed(m.tps), fixed(m.tvq),
+    m.cat, m.purpose, m.returnBy || '', m.refund ? fixed(m.refund) : '',
+    m.offer || '', m.terms || '', g.code, fixed(sub), fixed(m.tps), fixed(m.tvq),
     fixed(m.total), m.tpsNo, m.tvqNo, fileName, link, new Date().toISOString()
   ]);
 
@@ -1716,6 +1969,8 @@ function boot() {
   $('sAi').value = cfg('aiUrl');
   $('sAuto').value = cfg('autoScan');
   $opt('sReader').value = readerMode();
+  $opt('sRemind').value = cfg('remind');
+  $opt('sRemindDays').value = cfg('remindDays');
   $('sOrigin').value = location.origin;
   $('sRedir').value = redirectUri();
   $opt('sVer').value = APP_VERSION;
@@ -1814,6 +2069,8 @@ function boot() {
     /* Pointing at a different Worker makes the old failures meaningless. */
     if (prevAi !== cfg('aiUrl')) noteScanOk();
     setCfg('reader', $opt('sReader').value);
+    setCfg('remind', $opt('sRemind').value);
+    setCfg('remindDays', $opt('sRemindDays').value);
     setCfg('autoScan', $('sAuto').value);
     setCfg('taxGroup', $('sTaxDefault').value);
     setCfg('tpsRate', $('sTps').value.trim() || '5');
@@ -1824,6 +2081,7 @@ function boot() {
     paintStatus();
     paintReaderMode();
     paintScannerState();
+    paintRemind();
     toast('Settings saved.', 'good');
   });
 
@@ -1905,6 +2163,76 @@ function boot() {
     paintScannerState();
   });
 
+  $opt('offFix').addEventListener('click', () => showTab('set'));
+
+  $opt('openOffer').addEventListener('click', () => {
+    const url = $opt('fOffer').value.trim();
+    if (!url) return;
+    window.open(/^https?:/i.test(url) ? url : 'https://' + url, '_blank', 'noopener');
+  });
+
+  $opt('fReturnBy').addEventListener('change', paintReturn);
+  $opt('fRefund').addEventListener('input', paintReturn);
+  $opt('fOffer').addEventListener('input', paintOffer);
+
+  /* One tap, and it asks Google for calendar permission itself if it has not
+     already — this handler is a user gesture, which is the only moment Google
+     will show that prompt. Nothing to switch on in Settings first, and no
+     event is ever created without this tap. */
+  $opt('calBtn').addEventListener('click', async () => {
+    const btn = $opt('calBtn');
+    if (!remindersOn()) {
+      setCfg('remind', '1');
+      paintRemind();
+      $opt('sRemind').value = '1';
+      btn.textContent = 'Asking Google…';
+      try {
+        await requestToken(false);
+      } catch (e) {
+        setCfg('remind', '0');
+        paintRemind();
+        $opt('sRemind').value = '0';
+        btn.textContent = 'Add return date to your calendar';
+        toast('Calendar permission was not granted.', 'bad');
+        return;
+      }
+    }
+    btn.disabled = true;
+    const was = btn.textContent;
+    btn.textContent = 'Adding…';
+    try {
+      const ev = await addReturnReminder(collect());
+      toast(ev ? 'Reminder added to your calendar.' : 'Set a return date first.', ev ? 'good' : 'bad');
+    } catch (e) {
+      const m = String(e.message || e);
+      toast(m === 'calendar-not-granted'
+        ? 'Google has not granted calendar access. Tap Connect Drive in Settings to allow it.'
+        : m === 'auth-expired'
+          ? 'The Google sign-in lapsed. Tap Connect Drive in Settings.'
+          : 'Could not add the reminder: ' + m.slice(0, 60), 'bad');
+    } finally {
+      btn.disabled = false; btn.textContent = was;
+    }
+  });
+
+  $opt('sRemind').addEventListener('change', () => {
+    setCfg('remind', $opt('sRemind').value);
+    paintRemind();
+    if (remindersOn()) {
+      /* The extra permission has to be asked for, and Google will only ask
+         from inside a tap — which this is. */
+      toast('Asking Google for calendar permission…');
+      requestToken(false)
+        .then(() => toast('Calendar reminders are on.', 'good'))
+        .catch(() => toast('Calendar permission was not granted.', 'bad'));
+    }
+  });
+
+  $opt('sRemindDays').addEventListener('change', () => {
+    setCfg('remindDays', $opt('sRemindDays').value);
+    paintRemind();
+  });
+
   $opt('aiWake').addEventListener('click', () => {
     noteScanOk();
     paintScannerState();
@@ -1954,7 +2282,8 @@ function boot() {
 
   $('csvBtn').addEventListener('click', () => {
     const rows = [CSV_HEADER].concat(getHistory().map((r) => [
-      r.date, r.time || '', r.name, r.addr || '', r.phone || '', r.cat, r.purpose, r.tax || 'QC',
+      r.date, r.time || '', r.name, r.addr || '', r.phone || '', r.cat, r.purpose,
+      r.returnBy || '', r.refund ? fixed(r.refund) : '', r.offer || '', r.terms || '', r.tax || 'QC',
       fixed(r.total - r.tps - r.tvq), fixed(r.tps), fixed(r.tvq),
       fixed(r.total), r.tpsNo || '', r.tvqNo || '', r.file || '', r.link || '', r.status
     ]));
@@ -1975,6 +2304,9 @@ function boot() {
   paintStatus();
   paintReaderMode();
   paintScannerState();
+  paintRemind();
+  paintReturn();
+  paintOffer();
   updateSums();
 
   if (cameBack) {
@@ -1984,14 +2316,32 @@ function boot() {
   }
 
   /* Reconnect quietly and drain anything left over from last time. */
-  const tryResume = () => {
+  /* Google hands a browser app an hour-long token and no refresh token, so
+     "always connected" is really "renewed before you notice". Consent has
+     already been given, so the renewal is silent — no popup, no interruption.
+     It runs on a timer, whenever the app comes back to the foreground, and
+     whenever the network returns, which between them covers closing the tab,
+     locking the phone, and leaving it overnight. */
+  const keepAlive = (why) => {
     if (!cfg('clientId') || !window.google) return;
     initTokenClient();
-    if (connected()) flushQueue(false);
-    else if (S.get('granted', false)) requestToken(true).then(() => flushQueue(false)).catch(() => {});
+    if (connected()) { flushQueue(false); paintStatus(); return; }
+    if (!S.get('granted', false)) { paintStatus(); return; }
+    requestToken(true)
+      .then(() => { flushQueue(false); paintStatus(); })
+      /* A silent renewal fails when the Google session itself has ended, and
+         only tapping Connect can fix that. The banner already says so. */
+      .catch(() => paintStatus());
   };
-  setTimeout(tryResume, 1200);
-  window.addEventListener('online', () => flushQueue(false));
+
+  setTimeout(() => keepAlive('start'), 1200);
+  /* Well inside the hour, so a lapse is never what you find at the till. */
+  setInterval(() => keepAlive('timer'), 10 * 60 * 1000);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) keepAlive('foreground');
+  });
+  window.addEventListener('focus', () => keepAlive('focus'));
+  window.addEventListener('online', () => keepAlive('online'));
 
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').then((reg) => {
