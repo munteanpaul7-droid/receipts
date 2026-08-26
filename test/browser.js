@@ -286,6 +286,75 @@ const ok = (n, c, x) => { if (c) { pass++; console.log('  ok   ' + n); } else { 
     return document.getElementById('fAddr').value === 'MY OWN ADDRESS';
   }));
 
+  console.log('\n== the calendar button on the return part ==');
+  await page.evaluate(() => {
+    localStorage.setItem('rc_cfg_remind', JSON.stringify('1'));
+    localStorage.setItem('rc_cfg_remindDays', JSON.stringify('3'));
+    localStorage.setItem('rc_tok', JSON.stringify('fake'));
+    localStorage.setItem('rc_tokExp', JSON.stringify(Date.now() + 3600000));
+    localStorage.setItem('rc_granted', JSON.stringify(true));
+  });
+  await page.reload({ waitUntil: 'load' });
+  await page.waitForTimeout(600);
+
+  ok('hidden while there is no return date', !(await page.isVisible('#calBtn')));
+
+  await page.evaluate(() => {
+    document.getElementById('fName').value = 'Canadian Tire';
+    document.getElementById('fTotal').value = '62.13';
+    document.getElementById('fRefund').value = '62.13';
+    const d = document.getElementById('fReturnBy');
+    d.value = '2026-09-23';
+    d.dispatchEvent(new Event('change'));
+  });
+  await page.waitForTimeout(200);
+  ok('appears once a return date is set', await page.isVisible('#calBtn'));
+  ok('and is labelled plainly', (await page.textContent('#calBtn')).trim() === 'Add return date to your calendar',
+     await page.textContent('#calBtn'));
+  ok('and is green, like Save', await page.evaluate(() => {
+    const c = getComputedStyle(document.getElementById('calBtn')).backgroundColor;
+    const m = c.match(/\d+/g).map(Number);
+    return m[1] > m[0] && m[1] > m[2];   // more green than red or blue
+  }), await page.evaluate(() => getComputedStyle(document.getElementById('calBtn')).backgroundColor));
+  ok('the days left are spelled out', /day/.test(await page.textContent('#returnNote')), await page.textContent('#returnNote'));
+
+  await page.evaluate(() => {
+    window.__cal = null;
+    const real = window.fetch;
+    window.fetch = (u, o) => {
+      if (String(u).includes('calendar/v3')) {
+        window.__cal = JSON.parse(o.body);
+        return Promise.resolve(new Response(JSON.stringify({ id: 'ev1' }), { status: 200 }));
+      }
+      return real(u, o);
+    };
+  });
+  await page.click('#calBtn');
+  await page.waitForTimeout(700);
+  const ev = await page.evaluate(() => window.__cal);
+  ok('tapping it creates the event', !!ev, ev);
+  ok('three days before the deadline', ev && ev.start.date === '2026-09-20', ev && ev.start);
+  ok('naming the shop and the date', ev && /Canadian Tire/.test(ev.summary) && /2026-09-23/.test(ev.summary), ev && ev.summary);
+  ok('and asking keep or return, for how much', ev && /Keep it, or take it back/.test(ev.description) && /\$62\.13/.test(ev.description), ev && ev.description);
+
+  console.log('\n== the connection notice announces and withdraws ==');
+  ok('a lapse shows the red notice, then takes it away', await page.evaluate(async () => {
+    const el = document.getElementById('offWarn');
+    localStorage.setItem('rc_granted', JSON.stringify(true));
+    tokenExp = Date.now() + 3600000; accessToken = 'fake';
+    paintStatus();                       // seen as connected
+    tokenExp = 0;                        // the sign-in lapses
+    paintStatus();
+    const shown = !el.className.includes('hide');
+    await new Promise(r => setTimeout(r, 3300));
+    const fading = el.className.includes('fade');
+    await new Promise(r => setTimeout(r, 800));
+    const gone = el.className.includes('hide');
+    return shown && fading && gone;
+  }));
+  ok('the dot is what stays', await page.evaluate(() =>
+    !document.getElementById('dot').className.includes('on')));
+
   console.log('\n== the service worker registers and serves the shell ==');
   const sw = await page.evaluate(async () => {
     const r = await navigator.serviceWorker.getRegistration();

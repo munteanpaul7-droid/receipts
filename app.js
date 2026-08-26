@@ -96,7 +96,7 @@ const DEFAULTS = {
 /* Bumped whenever app.js, index.html or styles.css change. Shown in Settings
    so "did the update actually land" is a question you can answer from the
    phone, and used by the service worker to name its cache. */
-const APP_VERSION = '2026-08-26.2';
+const APP_VERSION = '2026-08-26.3';
 
 /* ------------------------------------------------------------- utilities */
 
@@ -172,7 +172,7 @@ function toast(msg, kind) {
   t.textContent = msg;
   t.className = 'toast show' + (kind ? ' ' + kind : '');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.className = 'toast' + (kind ? ' ' + kind : ''); }, 4200);
+  toastTimer = setTimeout(() => { t.className = 'toast' + (kind ? ' ' + kind : ''); }, 3000);
 }
 
 /* --------------------------------------------------------- Google OAuth  */
@@ -628,6 +628,27 @@ let catTouched = false; // once you pick a category yourself, the scan leaves it
 
 /* ---------------------------------------------------------------- render */
 
+/* null until the first look, so opening the app already connected does not
+   announce something that did not just happen. */
+let wasConnected = null;
+let offlineTimer = null;
+
+function hideOffline() {
+  clearTimeout(offlineTimer);
+  const el = $opt('offWarn');
+  if (el.className !== undefined) el.className = 'banner bad hide';
+}
+
+function flashOffline() {
+  const el = $opt('offWarn');
+  clearTimeout(offlineTimer);
+  el.className = 'banner bad';
+  offlineTimer = setTimeout(() => {
+    el.className = 'banner bad fade';
+    offlineTimer = setTimeout(() => { el.className = 'banner bad hide'; }, 600);
+  }, 3000);
+}
+
 function paintStatus() {
   const ok = connected();
   $('dot').className = 'dot' + (ok ? ' on' : '');
@@ -635,19 +656,23 @@ function paintStatus() {
     : (cfg('clientId') ? 'Client ID saved. Tap Connect Drive.' : 'Not connected');
   $('setupWarn').className = 'banner' + (cfg('clientId') ? ' hide' : '');
 
-  /* A dot in the corner is easy to miss, and a receipt filed believing it
-     reached Drive when it did not is the failure that matters here. While
-     the connection is down it is said in red, on the screen you are already
-     looking at — and the reason is stated, because "sign-in lapsed" and
-     "never set up" call for different things. */
-  const off = $opt('offWarn');
+  /* The connection is watched continuously, and each change is announced
+     once and then withdrawn — three seconds, then a fade. A banner that sits
+     there permanently stops being read, and the dot beside the title is the
+     thing that stays if you want to check. */
   const settingUp = !cfg('clientId') || !S.get('granted', false);
-  off.className = 'banner bad' + (ok || settingUp ? ' hide' : '');
-  if (!ok && !settingUp) {
-    $opt('offWhy').textContent = navigator.onLine
-      ? 'The Google sign-in has lapsed. Receipts are kept on this phone and upload as soon as it is back.'
-      : 'No connection at the moment. Receipts are kept on this phone and upload by themselves later.';
+  if (!settingUp && ok !== wasConnected) {
+    if (ok) {
+      if (wasConnected !== null) toast('Connected to Google Drive.', 'good');
+    } else {
+      $opt('offWhy').textContent = navigator.onLine
+        ? 'The Google sign-in has lapsed. Receipts are kept on this phone and upload as soon as it is back.'
+        : 'No connection at the moment. Receipts are kept on this phone and upload by themselves later.';
+      flashOffline();
+    }
   }
+  if (!settingUp) wasConnected = ok;
+  if (ok || settingUp) hideOffline();
   const rid = S.get('rootId', null);
   $('folderInfo').textContent = rid
     ? 'Drive folder ready: "' + cfg('root') + '" (the app only sees files it created).'
@@ -1736,7 +1761,7 @@ function paintReturn() {
   const cal = $opt('calBtn');
   if (!by) {
     note.textContent = 'No return window was found on the receipt. Fill it in if the shop gave you one.';
-    cal.className = 'chip hide';
+    cal.className = 'chip go hide';
     return;
   }
   const days = Math.round((Date.parse(by + 'T12:00:00Z') - Date.now()) / 86400000);
@@ -1745,7 +1770,7 @@ function paintReturn() {
     days < 0 ? 'That return window closed ' + Math.abs(days) + ' day' + (Math.abs(days) === 1 ? '' : 's') + ' ago.'
     : days === 0 ? 'Today is the last day to take it back' + money + '.'
     : 'You have ' + days + ' day' + (days === 1 ? '' : 's') + ' left to take it back' + money + '.';
-  cal.className = 'chip';
+  cal.className = 'chip go';
 }
 
 function money0(v) { return money(num(v)); }

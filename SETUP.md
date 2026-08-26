@@ -229,9 +229,12 @@ refreshed the way a server can. So the app renews it quietly instead — on a
 timer, whenever you come back to the app, and whenever the network returns.
 That covers closing the tab, locking the phone, and leaving it overnight.
 
-When it genuinely cannot, **a red banner says so on the first screen** rather
-than leaving you to notice a small dot. Receipts saved while it is down are
-kept on the phone and upload by themselves once it is back, exactly as before.
+The connection is watched continuously and each change is announced once —
+green when it comes back, red when it lapses — for three seconds, then it
+fades. A notice that sits there permanently stops being read; **the dot beside
+the title is what stays** if you want to check. Receipts saved while it is down
+are kept on the phone and upload by themselves once it is back, exactly as
+before.
 
 ## When the reading stops working
 
